@@ -1,0 +1,340 @@
+Build a single-page personal finance web app. No backend. Persist in localStorage. Currency is CAD, $ prefix, 2 decimal places. Weeks are Monday–Sunday.
+
+# Branding (mandatory)
+Product name is exactly: OKV Spend Smart
+Use that name in the visible header, browser tab title, README title, export filenames, and any empty-state / about copy.
+Do NOT use Ledger, OKV Ledger, Spend Smart only, or any other product name.
+Do NOT invent a different title for “looks cleaner.”
+Short mark in tight UI (favicon, tiny logo): OKV
+localStorage key prefix: okvSpendSmart
+Export default filename: OKV-Spend-Smart-backup.json / OKV-Spend-Smart-backup.csv
+If a mockup, comment, or template says Ledger, replace it with OKV Spend Smart before shipping.
+
+Opening the app always lands on Day view for today.
+“Today” and every stored date use the browser’s local calendar date as YYYY-MM-DD. Do not convert through UTC in a way that shifts the day in the evening (Alberta).
+
+The attached sketch is the Day money view only. Week, Month, Year, Bills, and Statistics use the layouts below.
+
+# Views
+Day | Week | Month | Year | Bills | Statistics
+
+Header on every view:
+- App title: OKV Spend Smart
+- View switcher
+- Date navigator (year / month / day, or week, or month, depending on view)
+- Today button
+- Prev / next
+- Search
+- Export
+Changing the date recomputes every box immediately.
+
+Payday markers (all navigators + Bills calendars):
+- Mark dates implied by Box 3 expected frequency (Daily / Monthly / Yearly)
+- Also mark dates that already have actual income entries
+- Payday is a MARKER ONLY. Not a bill, not an entry, not income.
+- Click payday → short note “Expected pay date (planning only)” + shortcut to Add funds received for that date. Nothing is saved until confirm.
+
+# Money model
+Tabs = categories. Seed with zero amounts:
+Bills, Food, Entertainment, Social, Gas, Work, Income.
+
+Columns = sub-items under one tab.
+Example: Food → Groceries, Coffee, Restaurants.
+
+System tab Uncategorized cannot be deleted.
+
+Income tab (and its columns) = inflow.
+Every other tab = outflow.
+
+Every actual dollar is one entry:
+{
+  id,
+  date,          // YYYY-MM-DD local
+  tabId,
+  columnId,
+  amount,        // positive number
+  type,          // income | expense | refund
+  memo,
+  source         // "grid" | "quick-add" | "add-funds" | "bills-overview" | "split"
+}
+
+The Day grid is only a view of entries for that date.
+Week / month / year / charts / delete / undo / rules all use the entry list.
+
+Multiple lines per column per day are allowed.
+The grid row shows the column total; the row can expand to edit lines.
+
+Net saved for a period = sum(income entries) − sum(expense entries) + refunds as spend reductions.
+Refund type reduces that column’s spend. It is not income.
+
+Expected income in Box 3 is planning only. It is NEVER added into net saved, day totals, week/month/year totals, averages, charts, or Statistics.
+
+# Day view (sketch)
+Top row, four cards:
+
+Box 1 (green) — This week’s money saved
+- Net saved for the Monday–Sunday week that contains the selected day.
+- Not a typed override.
+- Optional + only focuses Add funds received / Income.
+
+Box 2 (purple) — Monthly savings
+- Net saved for the calendar month of the selected day.
+
+Box 3 (blue) — Expected income + Add funds received
+Expected (planning only):
+- Frequency: Daily | Monthly | Yearly
+- Amount field, editable anytime. Persist last frequency + amount.
+- Show implied daily / weekly / monthly equivalents.
+  Daily = as entered
+  Monthly / days-in-selected-month = implied daily
+  Yearly / 365 (366 in leap year) = implied daily
+- Compare-to-plan under the field:
+  expected for the visible month vs actual income entries in that month vs difference (ahead/behind).
+- Changing date must not create entries from this field.
+
+Add funds received (actual money):
+- Button opens a modal BEFORE saving:
+  1. Amount (pre-filled from Box 3, editable)
+  2. Date received (picker, default = selected day)
+  3. Optional memo
+  4. Confirm / Cancel
+- On Confirm, create type:income on that date.
+- Adds only to that day’s income total (and the week/month/year that owns that date).
+- Does not change the expected Daily/Monthly/Yearly number.
+- If Income columns already have amounts that day, Add funds is extra actual income, not a replacement.
+
+Box 4 (red) — stacked running totals
+- Saved so far (all-time net)
+- Saved avg monthly
+- Saved avg weekly
+- Saved avg daily
+Averages = all-time net ÷ number of months/weeks/days that contain at least one entry.
+If denominator is 0, show $0.00 and “No data yet.” Never divide by zero.
+Label that averages use days-with-data.
+
+Below the cards:
+
+Quick add bar
+- Amount, optional memo/payee, date (default selected day), Add.
+- Runs categorization rules (below).
+
+Box 5 — horizontal tabs + Add tab
+- Active tab uses its color.
+- Small “Due today” chip if any bill is due on the selected date. Click → Bills day detail. Does not enter amounts.
+
+Box 6 — columns for the active tab + Add column
+
+Main grid
+- One row per column: name, total for the date, expand for lines.
+- Each line: amount + memo.
+- Commit on blur or Enter.
+- Show active-tab total and day grand total: income vs expenses vs net.
+
+Soft budgets
+- A tab or column may have optional { period: week|month, limit }.
+- Thin bar: spent / limit. Over limit turns red. Never block typing.
+
+Split
+- From an entry: split $90 into two or more columns on the same date.
+- Replaces the original entry. source: "split".
+
+# Context menus
+Same menu from all of:
+- Desktop right-click
+- Touch long-press (~500ms) on the same item (must not start a scroll; ignore the rest of that gesture)
+- ⋯ button on every tab, column, chart, and bill chip
+
+Empty Box 5 / Add tab: create tab (name + color).
+Empty Box 6 / Add column: create column under current tab (name + color).
+
+On an existing tab or column:
+- Rename
+- Change color
+- Move up / move down
+- Delete
+
+Delete modal:
+“Delete {name}? This cannot be undone.”
+Default: “Keep past amounts in Uncategorized.”
+Optional checkbox: “Also delete all historical amounts.”
+Require Confirm. Cancel does nothing.
+
+# Week view
+Boxes 1–4 stay.
+- Box 1 = selected week net
+- Box 2 = net for the month that contains that week
+- Box 3 still edits expected income + Add funds received
+  If used from Week view, default date = today if today is in that week, else that week’s Monday
+- Box 4 stays all-time / averages
+
+Replace the Day grid with:
+
+Box 5 — comparison, not tabs
+For this week, last week, week before:
+the 2 expense tabs with the highest totals, amounts, colors.
+No data → “No data.”
+
+Box 6 — chart builder
+Seed charts:
+1. Spent per day this week (bar)
+2. Saved per day this week (bar)
+3. Spend by tab this week (pie)
+
+Add chart:
+- type: pie | bar | line
+- metric: spent | saved | income
+- group by: tab | column | day
+- range: this week | last week | last 3 weeks
+Only offer tabs/columns that exist.
+⋯ on a chart: rename, duplicate, delete.
+
+Box 7 — render the selected chart with tab/column colors.
+Empty data = friendly empty state, not a broken canvas.
+Use Chart.js or similar.
+Week chart x-axis is always Mon–Sun. Days with no entries plot $0.
+
+# Month view
+Same structure as Week, scaled to months.
+Box 5: top 2 spending tabs for this month, last month, month before.
+Box 6/7 ranges: this month | last month | last 3 months | last 12 months.
+Extra group-by: day or week.
+
+# Year view
+Do not copy the Week layout blindly.
+Primary body: 12-month net saved bar chart for the selected year.
+Also:
+Box 5: top 2 spending tabs for this year, last year, year before (hide years with no data).
+Box 6/7: group-by month; ranges this year | last year | last 3 years.
+
+# Bills overview (separate from the Bills category tab)
+Bills tab = where actual payments are filed when money leaves.
+Bills view = calendar of due dates, pay methods, status.
+Due dates NEVER create an expense by themselves.
+
+A bill is a schedule item, not an entry:
+{
+  id,
+  name,                // Rent, Water, Internet
+  columnId,            // optional link to a Bills-tab column
+  amountExpected,      // planning only
+  dueDay,              // 1–31, or weekday if weekly
+  frequency,           // weekly | monthly | yearly | once
+  nextDueDate,         // local calendar date
+  payee,
+  payMethod,           // e.g. "Rent Cafe"
+  payUrl,
+  notes,
+  color,
+  statusByDate         // YYYY-MM-DD → upcoming | due | paid | skipped | overdue
+}
+
+Paid is a checklist status, not a transaction.
+Marking Paid must NOT auto-log money.
+After Paid, optional prompt defaulting to NO:
+“Also record $X under Bills → {column} on this date?”
+Only if the user confirms, create an expense entry with source: "bills-overview".
+That entry is what Boxes 1–4 and charts use.
+
+Bills month body
+- Month calendar, weeks Monday–Sunday.
+- Day cells: bill chips (name + expected amount), payday marker, overdue count.
+- Click a chip or due date → Bills day detail for that date.
+- Click payday → marker note + optional Add funds received. No save until confirm.
+
+Bills week body
+- Monday–Sunday columns listing that day’s bills + payday marker.
+- Click a due item → Bills day detail.
+
+Bills day body
+- Bills due that local date, plus still-open overdue items.
+- Each row: name, expected amount, payee, pay method, optional Open link (Rent Cafe etc.), notes, status Upcoming / Due / Paid / Skipped.
+- Add / edit bill here.
+- Extra info lives here, not on the Day money grid.
+
+# Statistics
+Full page of facts from REAL entries only. No invented numbers.
+Include at least:
+- best / worst save day, week, month
+- most expensive tab and column, all-time and this year
+- average spend per weekday
+- current streak of days with at least one entry
+- spend share by tab
+- income vs expenses this month vs last month
+- expected vs actual income this month (Box 3 plan vs entries)
+- Uncategorized count this month
+- projected month-end net if current daily average continues
+If not enough data: “Not enough data yet.” Hide the card rather than fake a number.
+
+# Categorization rules (local, user-built)
+Rules never invent a tab/column the user did not create.
+Manual placement always wins.
+
+Rule:
+{
+  id, name,
+  matchField: "memo",
+  matchType: "contains" | "starts with" | "exact",
+  matchValue,
+  destinationTabId, destinationColumnId,
+  appliesTo: "expenses" | "income" | "both",
+  priority, enabled
+}
+
+Quick add / Add-funds memo runs rules.
+- One match → file there, toast “Filed under Food → Coffee” with Undo.
+- Several matches → highest priority (lower number first).
+- No match → Uncategorized, prompt to assign tab + column.
+
+Add funds default destination: Income → Extra funds (create that column if missing), unless a rule says otherwise.
+
+Changing a rule does not rewrite old entries unless the user clicks “Apply to past Uncategorized entries.”
+Rename tab/column keeps destinations by id.
+Deleting a destination column disables the rule; future misses go to Uncategorized.
+
+Rules UI:
+- list with on/off and drag priority
+- create/edit form
+- test box: type a sample memo, show which rule would fire
+- delete rule confirms; already-filed entries stay put
+No bank import, no merchant database, no cloud ML, no auto-created tabs.
+
+# Search
+Header search over memo, payee, tab, column, amount.
+A result jumps to that date’s Day view and highlights the row.
+
+# Backup
+- Export JSON and CSV always visible.
+- Import with confirm: replace or merge.
+- Show “Last backup: {timestamp}” or “Never backed up.”
+- Soft reminder if last export > 14 days.
+README must say localStorage is deleted when site data is cleared.
+
+# Undo
+Last 20 actions (edit, delete, split, apply rule, mark bill paid). Undo in the header.
+
+# UX
+- Modern, high contrast. Cards stay green / purple / blue / red, but use tinted backgrounds + dark text so small numbers stay readable.
+- Keyboard: Tab through inputs, Enter commits, Esc closes menus/modals.
+- Amount fields: numbers only, 2 decimals.
+- Confirm destructive actions.
+- Narrow screens: cards wrap 2×2; Box 6 stacks above the grid; ⋯ and long-press work.
+- Seed example tabs with colors and $0. Do not seed fake transactions.
+- First-open empty state titled “Welcome to OKV Spend Smart”: create a tab, add one expense, add funds received, export a backup.
+
+# v1 out of scope
+No login, cloud sync, bank import, receipt OCR, investments, multi-currency, households, recurring auto-posting, AI-guessed categories.
+
+# Deliverable
+One app that opens in a browser with the title OKV Spend Smart.
+README titled OKV Spend Smart: data model, localStorage key okvSpendSmart, expected income vs actual entries, bill status vs logged payment, payday marker vs income.
+After building, walk through a sample:
+- expected monthly $3200
+- add funds $3200 on a chosen date
+- grocery expense
+- rent bill due the 1st marked Paid WITHOUT logging
+- then log rent on the 3rd
+Show that Box 1–4 only move on the actual entries, and that payday/due chips did not create money.
+
+# How to send this
+Attach the original Day-view sketch with this file and add:
+“Day money view follows this wireframe. Other views follow the spec, not the napkin layout.”
