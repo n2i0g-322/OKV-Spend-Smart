@@ -4,8 +4,8 @@ html, body, #root {
 }
 body {
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-  background: #f6f7fb;
-  color: #0f172a;
+  background: var(--bg, #f6f7fb);
+  color: var(--text, #0f172a);
 }
 button, input, select {
   font: inherit;

@@ -6,6 +6,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="OKV Spend Smart — personal finance tracker (CAD, local-only)" />
     <title>OKV Spend Smart</title>
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('okvSpendSmart:theme');
+          if (!raw) return;
+          var t = JSON.parse(raw);
+          var c = t && t.colors;
+          if (!c) return;
+          var root = document.documentElement;
+          var mode = t.mode === 'dark' ? 'dark' : 'light';
+          root.dataset.theme = mode;
+          if (mode === 'dark') root.classList.add('dark');
+          var map = {
+            bg: 'bg', card: 'card', text: 'text', muted: 'muted', border: 'border',
+            green: 'green', purple: 'purple', blue: 'blue', red: 'red',
+            primary: 'primary', shadow: 'shadow', surface2: 'surface-2',
+            inputBg: 'input-bg', greenBg: 'green-bg', greenBorder: 'green-border',
+            greenText: 'green-text', purpleBg: 'purple-bg', purpleBorder: 'purple-border',
+            purpleText: 'purple-text', blueBg: 'blue-bg', blueBorder: 'blue-border',
+            blueText: 'blue-text', redBg: 'red-bg', redBorder: 'red-border',
+            redText: 'red-text', warnBg: 'warn-bg', warnText: 'warn-text',
+            onAccent: 'on-accent'
+          };
+          Object.keys(map).forEach(function (k) {
+            if (typeof c[k] === 'string' && c[k]) root.style.setProperty('--' + map[k], c[k]);
+          });
+        } catch (e) { /* ignore */ }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

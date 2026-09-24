@@ -36,6 +36,17 @@ import { SearchModal } from './components/Search';
 import { RulesModal } from './components/Rules';
 import { FirstOpen } from './components/FirstOpen';
 import { Modal } from './components/Modal';
+import { ThemePanel } from './components/ThemePanel';
+import {
+  applyTheme,
+  applyPreset,
+  loadTheme,
+  resetTheme,
+  toggleMode,
+  updateColors,
+  type ThemeColors,
+  type ThemeState,
+} from './theme';
 import './App.css';
 
 type Toast = { id: string; message: string; undo?: () => void };
@@ -61,6 +72,13 @@ export default function App() {
   const [canUndo, setCanUndo] = useState(false);
   const undoRef = useRef(new UndoStack());
   const importRef = useRef<HTMLInputElement>(null);
+  const [theme, setTheme] = useState<ThemeState>(() => {
+    const t = loadTheme();
+    applyTheme(t);
+    return t;
+  });
+  const [themeOpen, setThemeOpen] = useState(false);
+
 
   useEffect(() => {
     saveState(state);
@@ -285,6 +303,7 @@ export default function App() {
         selectedDate={selectedDate}
         canUndo={canUndo}
         lastBackupAt={state.lastBackupAt}
+        darkMode={theme.mode === 'dark'}
         onView={setView}
         onDate={setSelectedDate}
         onSearch={() => setSearchOpen(true)}
@@ -292,6 +311,8 @@ export default function App() {
         onImport={() => setImportOpen(true)}
         onUndo={handleUndo}
         onRules={() => setRulesOpen(true)}
+        onToggleDark={() => setTheme(toggleMode(theme))}
+        onTheme={() => setThemeOpen(true)}
       />
 
       {view !== 'bills' && view !== 'statistics' && (
@@ -482,6 +503,17 @@ export default function App() {
             </button>
           </div>
         </Modal>
+      )}
+      {themeOpen && (
+        <ThemePanel
+          theme={theme}
+          onApplyPreset={(id) => setTheme(applyPreset(id))}
+          onUpdateColor={(key: keyof ThemeColors, value: string) =>
+            setTheme(updateColors(theme, { [key]: value }))
+          }
+          onReset={() => setTheme(resetTheme())}
+          onClose={() => setThemeOpen(false)}
+        />
       )}
       {!state.hasSeenWelcome && (
         <FirstOpen

@@ -26,6 +26,7 @@ interface Props {
   selectedDate: string;
   canUndo: boolean;
   lastBackupAt: string | null;
+  darkMode: boolean;
   onView: (v: ViewName) => void;
   onDate: (d: string) => void;
   onSearch: () => void;
@@ -33,6 +34,8 @@ interface Props {
   onImport: () => void;
   onUndo: () => void;
   onRules: () => void;
+  onToggleDark: () => void;
+  onTheme: () => void;
 }
 
 function backupLabel(iso: string | null): string {
@@ -49,6 +52,7 @@ export function Header({
   selectedDate,
   canUndo,
   lastBackupAt,
+  darkMode,
   onView,
   onDate,
   onSearch,
@@ -56,6 +60,8 @@ export function Header({
   onImport,
   onUndo,
   onRules,
+  onToggleDark,
+  onTheme,
 }: Props) {
   const d = parseLocalDate(selectedDate);
   const week = weekRangeMonSun(selectedDate);
@@ -78,9 +84,6 @@ export function Header({
     else if (view === 'year') onDate(shiftYear(selectedDate, 1));
     else onDate(toYMD(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)));
   };
-
-  // Fix: bills can have week/day subviews — for header, month nav is fine for bills/month
-  // week view uses week shift; day uses day
 
   return (
     <header className="app-header">
@@ -119,6 +122,21 @@ export function Header({
           <button type="button" className="btn ghost" onClick={onImport}>
             Import
           </button>
+          <button type="button" className="btn ghost" onClick={onTheme}>
+            Theme
+          </button>
+          <label className="theme-switch" title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}>
+            <span className="sr-only">Dark mode</span>
+            <input
+              type="checkbox"
+              checked={darkMode}
+              onChange={onToggleDark}
+              aria-label="Dark mode"
+            />
+            <span className="theme-switch-track" aria-hidden>
+              <span className="theme-switch-thumb">{darkMode ? '🌙' : '☀️'}</span>
+            </span>
+          </label>
           <span className={`backup-pill${stale ? ' warn' : ''}`}>
             {backupLabel(lastBackupAt)}
             {stale && lastBackupAt ? ' — backup soon' : ''}
