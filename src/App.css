@@ -944,3 +944,68 @@ body {
   .theme-presets { grid-template-columns: 1fr 1fr; }
   .theme-pickers { grid-template-columns: 1fr; }
 }
+
+/* Bills activity board (fix pass 2026-09-24) */
+.cal-hint { margin: -6px 0 8px; }
+.cal-cell { display: flex; flex-direction: column; gap: 1px; min-width: 0; overflow: hidden; }
+.cal-cell.selected { box-shadow: inset 0 0 0 2px var(--primary); }
+.cal-cell:focus-visible { outline: 2px solid var(--primary); }
+.cal-day.linkish {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--text);
+  font-weight: 700;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.cal-day.linkish:hover { text-decoration: underline; }
+.chip.entry, .chip.more {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip.more { background: var(--surface-2); color: var(--muted); border: 1px dashed var(--border); }
+.chip.bill { margin-top: 2px; }
+.chip.bill .bill-chip-btn {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+.chip.bill .bill-chip-btn.status-paid { text-decoration: line-through; opacity: 0.75; }
+.leg.entry { background: linear-gradient(90deg, #f59e0b, #22c55e, #a855f7); }
+.bills-week-col { cursor: pointer; min-width: 0; }
+.bills-day-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.bills-day-head h3 { margin: 0; }
+.bills-day-section { margin: 16px 0 4px; font-size: 0.9rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.bill-detail-list li.focused {
+  background: var(--warn-bg);
+  border-radius: 8px;
+  padding-left: 8px;
+  padding-right: 8px;
+  animation: okv-focus 1.2s ease-out 1;
+}
+@keyframes okv-focus { from { box-shadow: 0 0 0 3px var(--primary); } to { box-shadow: 0 0 0 0 transparent; } }
+.amt.income { color: var(--green-text); font-weight: 700; }
+.amt.refund { color: var(--blue-text); font-weight: 700; }
+.amt.expense { font-weight: 700; }
+.action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+.action-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 12px;
+  font-weight: 700;
+  text-align: left;
+}
+.action-btn small { font-weight: 500; opacity: 0.85; font-size: 0.72rem; }
+.form-error { color: var(--red-text); font-size: 0.85rem; }
+.backup-pill.error { background: var(--red-bg); color: var(--red-text); }
+.line select.type-select { max-width: 96px; }

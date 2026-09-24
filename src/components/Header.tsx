@@ -6,6 +6,7 @@ import {
   parseLocalDate,
   shiftMonth,
   shiftWeek,
+  setYearMonthClamped,
   shiftYear,
   toYMD,
   weekRangeMonSun,
@@ -25,7 +26,10 @@ interface Props {
   view: ViewName;
   selectedDate: string;
   canUndo: boolean;
-  lastBackupAt: string | null;
+  lastSavedAt: string | null;
+  lastExportAt: string | null;
+  saveError: string | null;
+  now: number;
   darkMode: boolean;
   onView: (v: ViewName) => void;
   onDate: (d: string) => void;
@@ -38,20 +42,29 @@ interface Props {
   onTheme: () => void;
 }
 
-function backupLabel(iso: string | null): string {
-  if (!iso) return 'Never backed up';
+/** "Saved just now" / "Saved 5 min ago" … for the last successful localStorage write. */
+export function savedLabel(iso: string | null, now: number): string {
+  if (!iso) return 'Not saved yet';
   const then = new Date(iso).getTime();
-  const days = Math.floor((Date.now() - then) / 86400000);
-  if (days <= 0) return 'Last backup today';
-  if (days === 1) return 'Last backup 1 day ago';
-  return `Last backup ${days} days ago`;
+  if (!Number.isFinite(then)) return 'Not saved yet';
+  const secs = Math.max(0, Math.floor((now - then) / 1000));
+  if (secs < 60) return 'Saved just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `Saved ${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `Saved ${hrs} h ago`;
+  const days = Math.floor(hrs / 24);
+  return `Saved ${days} day${days === 1 ? '' : 's'} ago`;
 }
 
 export function Header({
   view,
   selectedDate,
   canUndo,
-  lastBackupAt,
+  lastSavedAt,
+  lastExportAt,
+  saveError,
+  now,
   darkMode,
   onView,
   onDate,
@@ -65,9 +78,9 @@ export function Header({
 }: Props) {
   const d = parseLocalDate(selectedDate);
   const week = weekRangeMonSun(selectedDate);
-  const stale =
-    !lastBackupAt ||
-    Date.now() - new Date(lastBackupAt).getTime() > 14 * 86400000;
+  // Soft export reminder: only once the user has exported before and it is > 14 days old.
+  const exportStale =
+    !!lastExportAt && now - new Date(lastExportAt).getTime() > 14 * 86400000;
 
   const goToday = () => onDate(localToday());
 
@@ -137,9 +150,17 @@ export function Header({
               <span className="theme-switch-thumb">{darkMode ? '🌙' : '☀️'}</span>
             </span>
           </label>
-          <span className={`backup-pill${stale ? ' warn' : ''}`}>
-            {backupLabel(lastBackupAt)}
-            {stale && lastBackupAt ? ' — backup soon' : ''}
+          <span
+            className={`backup-pill${saveError ? ' error' : exportStale ? ' warn' : ''}`}
+            title={
+              (lastSavedAt ? `Saved in this browser ${new Date(lastSavedAt).toLocaleString('en-CA')}` : '') +
+              (lastExportAt ? ` · Last export ${new Date(lastExportAt).toLocaleString('en-CA')}` : ' · Never exported')
+            }
+            role="status"
+            aria-live="polite"
+          >
+            {saveError ? 'Not saved — storage error' : savedLabel(lastSavedAt, now)}
+            {!saveError && exportStale ? ' · export a backup soon' : ''}
           </span>
         </div>
       </div>
@@ -156,11 +177,9 @@ export function Header({
               Year
               <select
                 value={getYear(selectedDate)}
-                onChange={(e) => {
-                  const nd = new Date(d);
-                  nd.setFullYear(Number(e.target.value));
-                  onDate(toYMD(nd));
-                }}
+                onChange={(e) =>
+                  onDate(setYearMonthClamped(selectedDate, Number(e.target.value), d.getMonth()))
+                }
               >
                 {Array.from({ length: 11 }, (_, i) => getYear(localToday()) - 5 + i).map(
                   (y) => (
@@ -175,11 +194,9 @@ export function Header({
               Month
               <select
                 value={d.getMonth()}
-                onChange={(e) => {
-                  const nd = new Date(d);
-                  nd.setMonth(Number(e.target.value));
-                  onDate(toYMD(nd));
-                }}
+                onChange={(e) =>
+                  onDate(setYearMonthClamped(selectedDate, d.getFullYear(), Number(e.target.value)))
+                }
               >
                 {Array.from({ length: 12 }, (_, i) => (
                   <option key={i} value={i}>

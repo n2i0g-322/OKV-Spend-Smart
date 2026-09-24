@@ -23,12 +23,21 @@ GitHub Pages base path is `/OKV-Spend-Smart/`.
 - **Currency:** CAD, `$` prefix, 2 decimal places.
 - **Weeks:** Monday–Sunday.
 - **Dates:** Local calendar `YYYY-MM-DD`. Never derive “today” via `toISOString().slice(0,10)` (avoids Alberta evening UTC shift).
-- **Opening view:** Day view for today.
+- **Opening view:** Day view for today. A browser refresh restores the view/date you were on.
 
 ## localStorage
 
-- Key prefix: `okvSpendSmart`
-- Primary blob: `okvSpendSmart:state`
+- One blob under the key **`okvSpendSmart`**: `{ schema, savedAt, state, theme, ui }`.
+  `state` holds tabs, columns (+ soft budgets), entries, bills (+ paid/skipped statuses), rules,
+  charts, Box 3 expected income + frequency, `lastBackupAt` (= last successful save) and
+  `lastExportAt`; `theme` is the colour theme; `ui` is the last view + selected date.
+- Written synchronously after every committed action, plus a 60-second flush if anything is dirty.
+  The header shows “Saved just now / Saved N min ago”.
+- On boot storage is read first; default tabs are seeded only when storage is truly empty. Nothing is
+  written until that read has finished.
+- Older builds used `okvSpendSmart:state` and `okvSpendSmart:theme`. These are read as a fallback,
+  merged into the new blob automatically, and left in place untouched.
+- If the app is open in two browser tabs, a save in one tab is picked up by the other.
 
 **Warning:** Clearing site data / cookies for this origin wipes localStorage and deletes all OKV Spend Smart data. Export backups regularly (JSON + CSV).
 
@@ -50,6 +59,14 @@ Expected income (Daily / Monthly / Yearly amount) is **planning only**. It never
 ### Payday markers vs income
 
 Payday chips mark dates implied by expected frequency (and dates that already have income). Clicking shows a note and a shortcut to Add funds. **Nothing is saved until Confirm.**
+
+### Bills overview calendar
+
+The Bills month view is a full activity board: payday markers (green, marker only), scheduled
+bill reminders (🔔, bill colour), and every real entry for the day (tab colour, name, amount;
+“+N more” when busy). Click an empty part of a day for: **Add bill** (reminder only),
+**Add funds received** (income after Confirm), or **Add {tab}** for every tab (creates a real
+entry with `source: "bills-overview"`). Click a chip to open that day’s detail focused on it.
 
 ### Bill status vs logged payment
 

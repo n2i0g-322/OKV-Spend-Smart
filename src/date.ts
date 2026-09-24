@@ -9,9 +9,25 @@ export function localToday(): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
+/** True for a well-formed, real YYYY-MM-DD calendar date. */
+export function isValidYMD(ymd: unknown): ymd is string {
+  if (typeof ymd !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return false;
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d;
+}
+
+/** Parse YYYY-MM-DD as a LOCAL date (never `new Date('YYYY-MM-DD')`, which is UTC). */
 export function parseLocalDate(ymd: string): Date {
   const [y, m, d] = ymd.split('-').map(Number);
   return new Date(y, m - 1, d);
+}
+
+/** Set year and/or month on a date, clamping the day (Jan 31 → Feb 28, not Mar 3). */
+export function setYearMonthClamped(ymd: string, year: number, month0: number): string {
+  const d = parseLocalDate(ymd);
+  const max = new Date(year, month0 + 1, 0).getDate();
+  return toYMD(new Date(year, month0, Math.min(d.getDate(), max)));
 }
 
 export function toYMD(d: Date): string {
@@ -61,8 +77,9 @@ export function isLeapYear(year: number): boolean {
 }
 
 export function formatMoney(n: number): string {
-  const neg = n < 0;
-  const abs = Math.abs(n);
+  const cents = Number.isFinite(n) ? Math.round(n * 100) : 0;
+  const neg = cents < 0; // never show "-$0.00" for float dust
+  const abs = Math.abs(cents) / 100;
   const formatted = abs.toLocaleString('en-CA', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
@@ -107,8 +124,8 @@ export function shiftMonth(ymd: string, delta: number): string {
 
 export function shiftYear(ymd: string, delta: number): string {
   const d = parseLocalDate(ymd);
-  d.setFullYear(d.getFullYear() + delta);
-  return toYMD(d);
+  // clamp Feb 29 → Feb 28 in non-leap years (instead of rolling to Mar 1)
+  return setYearMonthClamped(ymd, d.getFullYear() + delta, d.getMonth());
 }
 
 export function shiftWeek(ymd: string, delta: number): string {

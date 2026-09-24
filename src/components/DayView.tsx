@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { AppState, Column, Entry, Tab } from '../types';
 import { formatMoney } from '../date';
 import {
@@ -118,6 +118,10 @@ export function DayView({
   };
 
   const updateEntry = (id: string, patch: Partial<Entry>) => {
+    const cur = state.entries.find((e) => e.id === id);
+    if (!cur) return;
+    // skip no-op commits (keeps undo history clean)
+    if (Object.entries(patch).every(([k, v]) => cur[k as keyof Entry] === v)) return;
     pushUndo();
     onState({
       ...state,
@@ -414,25 +418,42 @@ export function DayView({
                         key={e.id}
                         className={`line${highlightEntryId === e.id ? ' highlight' : ''}`}
                       >
-                        <input
+                        <CommitInput
                           type="number"
-                          step="0.01"
-                          value={e.amount}
-                          onChange={(ev) => {
-                            const n = Number(ev.target.value);
-                            if (Number.isFinite(n) && n >= 0)
-                              updateEntry(e.id, {
-                                amount: Math.round(n * 100) / 100,
-                              });
+                          value={e.amount.toFixed(2)}
+                          onCommit={(raw) => {
+                            const n = Number(raw);
+                            // amounts must stay positive; invalid/0 reverts instead of saving $0
+                            if (!Number.isFinite(n) || n <= 0) return false;
+                            updateEntry(e.id, { amount: Math.round(n * 100) / 100 });
+                            return true;
                           }}
                         />
-                        <input
+                        <CommitInput
                           type="text"
                           value={e.memo}
                           placeholder="Memo"
-                          onChange={(ev) => updateEntry(e.id, { memo: ev.target.value })}
+                          onCommit={(raw) => {
+                            updateEntry(e.id, { memo: raw });
+                            return true;
+                          }}
                         />
-                        <span className="muted tiny">{e.type}</span>
+                        {activeTab?.isIncome ? (
+                          <span className="muted tiny">{e.type}</span>
+                        ) : (
+                          <select
+                            className="type-select"
+                            value={e.type === 'refund' ? 'refund' : 'expense'}
+                            aria-label="Entry type"
+                            title="Refund reduces this column's spend (it is not income)"
+                            onChange={(ev) =>
+                              updateEntry(e.id, { type: ev.target.value as Entry['type'] })
+                            }
+                          >
+                            <option value="expense">expense</option>
+                            <option value="refund">refund</option>
+                          </select>
+                        )}
                         <button
                           type="button"
                           className="btn ghost sm"
@@ -480,5 +501,40 @@ export function DayView({
         <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />
       )}
     </div>
+  );
+}
+
+/** Text/number input that keeps a local draft and commits on blur or Enter (Esc reverts). */
+function CommitInput({
+  type,
+  value,
+  placeholder,
+  onCommit,
+}: {
+  type: 'text' | 'number';
+  value: string;
+  placeholder?: string;
+  onCommit: (raw: string) => boolean;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const commit = () => {
+    if (draft === value) return;
+    if (!onCommit(draft)) setDraft(value);
+  };
+  return (
+    <input
+      type={type}
+      step={type === 'number' ? '0.01' : undefined}
+      min={type === 'number' ? '0' : undefined}
+      value={draft}
+      placeholder={placeholder}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        if (e.key === 'Escape') setDraft(value);
+      }}
+    />
   );
 }

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { localToday } from '../date';
+import { useEffect, useState } from 'react';
+import { isValidYMD, localToday } from '../date';
 
 interface Props {
   defaultDate: string;
@@ -11,15 +11,17 @@ export function QuickAdd({ defaultDate, onAdd }: Props) {
   const [memo, setMemo] = useState('');
   const [date, setDate] = useState(defaultDate || localToday());
 
-  // keep date in sync when selected day changes
-  if (date !== defaultDate && document.activeElement?.tagName !== 'INPUT') {
-    // avoid fighting user — only sync via effect-like pattern below
-  }
+  // Keep the date in sync when the selected day changes (previously it stayed on the
+  // first day the view was opened, so entries silently landed on the wrong date).
+  useEffect(() => {
+    setDate(defaultDate || localToday());
+  }, [defaultDate]);
 
   const submit = () => {
     const n = Number(amount);
     if (!Number.isFinite(n) || n <= 0) return;
-    onAdd(Math.round(n * 100) / 100, memo.trim(), date || defaultDate);
+    const d = isValidYMD(date) ? date : defaultDate;
+    onAdd(Math.round(n * 100) / 100, memo.trim(), d);
     setAmount('');
     setMemo('');
   };

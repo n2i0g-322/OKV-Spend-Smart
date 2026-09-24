@@ -18,21 +18,27 @@ interface Props {
 }
 
 export function SplitModal({ entry, tabs, columns, onConfirm, onClose }: Props) {
+  // Income splits across income columns; expenses/refunds across expense columns.
+  const wantIncome = entry.type === 'income';
   const expenseCols = columns.filter((c) => {
     const t = tabs.find((x) => x.id === c.tabId);
-    return t && !t.isIncome;
+    return t && !!t.isIncome === wantIncome;
   });
+  // Halve in whole cents so the two default parts always add back to the original ($10.01 → 5.00 + 5.01).
+  const totalCents = Math.round(entry.amount * 100);
+  const halfCents = Math.floor(totalCents / 2);
   const [lines, setLines] = useState<SplitLine[]>([
-    { columnId: entry.columnId, amount: (entry.amount / 2).toFixed(2), memo: entry.memo },
+    { columnId: entry.columnId, amount: (halfCents / 100).toFixed(2), memo: entry.memo },
     {
       columnId: expenseCols.find((c) => c.id !== entry.columnId)?.id ?? entry.columnId,
-      amount: (entry.amount / 2).toFixed(2),
+      amount: ((totalCents - halfCents) / 100).toFixed(2),
       memo: entry.memo,
     },
   ]);
 
-  const total = lines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
-  const ok = Math.abs(total - entry.amount) < 0.005 && lines.every((l) => Number(l.amount) > 0);
+  const partsCents = lines.reduce((s, l) => s + Math.round((Number(l.amount) || 0) * 100), 0);
+  const total = partsCents / 100;
+  const ok = partsCents === totalCents && lines.every((l) => Number(l.amount) > 0);
 
   return (
     <Modal title={`Split ${formatMoney(entry.amount)}`} onClose={onClose} wide>

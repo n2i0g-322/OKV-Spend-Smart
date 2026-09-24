@@ -113,7 +113,10 @@ export interface AppState {
   rules: Rule[];
   expectedIncome: ExpectedIncome;
   charts: ChartConfig[];
-  lastBackupAt: string | null; // ISO timestamp
+  /** ISO timestamp of the last successful save of the app blob (shown as "Saved …"). */
+  lastBackupAt: string | null;
+  /** ISO timestamp of the last Export JSON/CSV download (drives the 14-day export reminder). */
+  lastExportAt?: string | null;
   hasSeenWelcome: boolean;
   activeTabId: string | null;
 }

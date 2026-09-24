@@ -7,17 +7,22 @@ import type {
   Tab,
   ViewName,
 } from './types';
-import { localToday, weekRangeMonSun } from './date';
+import { isValidYMD, localToday, weekRangeMonSun } from './date';
 import {
+  KEY as STORAGE_KEY,
   downloadBlob,
   exportCSV,
   exportJSON,
-  loadState,
-  markBackup,
+  loadAll,
+  markExport,
   mergeStates,
+  parseBlob,
   parseImport,
-  saveState,
+  parseImportTheme,
+  saveAll,
+  type UiPrefs,
 } from './storage';
+import { dueOn } from './bills';
 import { ensureExtraFundsColumn, getOrCreateUncategorizedColumn, getUncategorizedTab } from './seed';
 import { applyRuleDestination, applyRulesToUncategorized, findMatchingRule } from './rules';
 import { UndoStack } from './undo';
@@ -27,7 +32,7 @@ import { DayView } from './components/DayView';
 import { WeekView } from './components/WeekView';
 import { MonthView } from './components/MonthView';
 import { YearView } from './components/YearView';
-import { BillsView } from './components/BillsView';
+import { BillsView, type BillsSub } from './components/BillsView';
 import { StatisticsView } from './components/StatisticsView';
 import { AddFunds } from './components/AddFunds';
 import { DeleteConfirm } from './components/DeleteConfirm';
@@ -40,7 +45,6 @@ import { ThemePanel } from './components/ThemePanel';
 import {
   applyTheme,
   applyPreset,
-  loadTheme,
   resetTheme,
   toggleMode,
   updateColors,
@@ -51,10 +55,38 @@ import './App.css';
 
 type Toast = { id: string; message: string; undo?: () => void };
 
+/** True when this page load is a browser refresh / back-forward (restore last view + date). */
+function isReloadNavigation(): boolean {
+  try {
+    const nav = performance.getEntriesByType('navigation')[0] as
+      | PerformanceNavigationTiming
+      | undefined;
+    return nav?.type === 'reload' || nav?.type === 'back_forward';
+  } catch {
+    return false;
+  }
+}
+
+const FLUSH_MS = 60_000;
+
 export default function App() {
-  const [state, setState] = useState<AppState>(() => loadState());
-  const [view, setView] = useState<ViewName>('day');
-  const [selectedDate, setSelectedDate] = useState(localToday);
+  // ---- Boot: READ storage first (synchronously, before first render). ----
+  const [boot] = useState(() => {
+    const r = loadAll();
+    applyTheme(r.theme);
+    const restoreUi = r.source === 'blob' && isReloadNavigation();
+    const ui: UiPrefs = restoreUi ? r.ui : { view: 'day', selectedDate: localToday() };
+    return { ...r, ui };
+  });
+  const [state, setState] = useState<AppState>(boot.state);
+  const [view, setViewState] = useState<ViewName>(boot.ui.view);
+  const [selectedDate, setSelectedDateState] = useState(boot.ui.selectedDate);
+  const [billsSub, setBillsSub] = useState<BillsSub>('month');
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(
+    boot.savedAt ?? boot.state.lastBackupAt,
+  );
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [addFundsOpen, setAddFundsOpen] = useState(false);
   const [addFundsDate, setAddFundsDate] = useState(localToday());
@@ -72,29 +104,116 @@ export default function App() {
   const [canUndo, setCanUndo] = useState(false);
   const undoRef = useRef(new UndoStack());
   const importRef = useRef<HTMLInputElement>(null);
-  const [theme, setTheme] = useState<ThemeState>(() => {
-    const t = loadTheme();
-    applyTheme(t);
-    return t;
-  });
+  const [theme, setThemeState] = useState<ThemeState>(boot.theme);
   const [themeOpen, setThemeOpen] = useState(false);
 
+  // ---- Persistence: one blob, written synchronously after every committed action. ----
+  /** Latest committed values (refs so a write never uses a stale render's state). */
+  const live = useRef<{ state: AppState; theme: ThemeState; ui: UiPrefs }>({
+    state: boot.state,
+    theme: boot.theme,
+    ui: boot.ui,
+  });
+  /** Never write until hydration from localStorage has finished. */
+  const hydrated = useRef(false);
+  const dirty = useRef(false);
+
+  const persist = useCallback(() => {
+    dirty.current = true;
+    if (!hydrated.current) return;
+    try {
+      const at = saveAll(live.current.state, live.current.theme, live.current.ui);
+      dirty.current = false;
+      setLastSavedAt(at);
+      setNow(Date.now());
+      setSaveError(null);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Could not save');
+    }
+  }, []);
 
   useEffect(() => {
-    saveState(state);
-  }, [state]);
+    // Hydration finished (state came from storage in the useState initializer).
+    hydrated.current = true;
+    // Migrate legacy keys into the single blob, or persist a brand-new seed once
+    // (only reached when storage was truly empty). Safe under StrictMode double-run.
+    if (boot.source !== 'blob' || dirty.current) persist();
+
+    const flush = () => {
+      if (dirty.current) persist();
+    };
+    const tick = window.setInterval(() => {
+      flush();
+      setNow(Date.now());
+    }, FLUSH_MS);
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    // Another browser tab saved: adopt its data so this tab never overwrites it with stale state.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== STORAGE_KEY || !e.newValue) return;
+      const other = parseBlob(e.newValue);
+      if (!other) return;
+      live.current = { ...live.current, state: other.state, theme: other.theme };
+      setState(other.state);
+      setThemeState(other.theme);
+      applyTheme(other.theme);
+      setLastSavedAt(other.savedAt);
+    };
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.clearInterval(tick);
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [boot.source, persist]);
+
+  /** Commit a new AppState: update refs, write storage synchronously, then render. */
+  const update = useCallback(
+    (next: AppState) => {
+      const n = ensureExtraFundsColumn(next);
+      live.current = { ...live.current, state: n };
+      setState(n);
+      persist();
+    },
+    [persist],
+  );
+
+  const setTheme = useCallback(
+    (t: ThemeState) => {
+      live.current = { ...live.current, theme: t };
+      setThemeState(t);
+      persist();
+    },
+    [persist],
+  );
+
+  const setView = useCallback(
+    (v: ViewName) => {
+      live.current = { ...live.current, ui: { ...live.current.ui, view: v } };
+      setViewState(v);
+      persist();
+    },
+    [persist],
+  );
+
+  const setSelectedDate = useCallback(
+    (d: string) => {
+      if (!isValidYMD(d)) return; // ignore cleared/invalid date inputs
+      live.current = { ...live.current, ui: { ...live.current.ui, selectedDate: d } };
+      setSelectedDateState(d);
+      persist();
+    },
+    [persist],
+  );
 
   const pushUndo = useCallback(() => {
     undoRef.current.push(state);
     setCanUndo(true);
   }, [state]);
-
-  const update = useCallback(
-    (next: AppState) => {
-      setState(ensureExtraFundsColumn(next));
-    },
-    [],
-  );
 
   const showToast = (message: string, undo?: () => void) => {
     const id = crypto.randomUUID();
@@ -105,7 +224,7 @@ export default function App() {
   const handleUndo = () => {
     const prev = undoRef.current.undo(state);
     if (prev) {
-      setState(prev);
+      update(prev);
       setCanUndo(undoRef.current.canUndo());
     }
   };
@@ -122,6 +241,7 @@ export default function App() {
   };
 
   const confirmAddFunds = (amount: number, date: string, memo: string) => {
+    if (!isValidYMD(date) || !(amount > 0)) return;
     pushUndo();
     let s = ensureExtraFundsColumn(state);
     const rule = findMatchingRule(s.rules, memo, 'income');
@@ -145,6 +265,7 @@ export default function App() {
   };
 
   const handleQuickAdd = (amount: number, memo: string, date: string) => {
+    if (!isValidYMD(date) || !(amount > 0)) return;
     pushUndo();
     let s = state;
     const rule = findMatchingRule(s.rules, memo, 'expense');
@@ -245,7 +366,8 @@ export default function App() {
         tabId: col.tabId,
         columnId: l.columnId,
         amount: l.amount,
-        type: splitEntry.type === 'income' ? 'income' : 'expense',
+        // keep the original type (a split refund stays a refund, income stays income)
+        type: splitEntry.type,
         memo: l.memo,
         source: 'split',
       };
@@ -254,24 +376,18 @@ export default function App() {
     setSplitEntry(null);
   };
 
-  const dueToday = useMemo(() => {
-    return state.bills.filter((b) => {
-      if (b.frequency === 'once') return b.nextDueDate === selectedDate;
-      if (b.frequency === 'monthly') {
-        const day = Number(selectedDate.slice(8));
-        return day === b.dueDay || b.nextDueDate === selectedDate;
-      }
-      return b.nextDueDate === selectedDate;
-    });
-  }, [state.bills, selectedDate]);
+  const dueToday = useMemo(
+    () => state.bills.filter((b) => dueOn(b, selectedDate)),
+    [state.bills, selectedDate],
+  );
 
   const doExport = (kind: 'json' | 'csv') => {
-    const stamped = markBackup(state);
+    const stamped = markExport(state);
     update(stamped);
     if (kind === 'json') {
       downloadBlob(
         'OKV-Spend-Smart-backup.json',
-        exportJSON(stamped),
+        exportJSON(stamped, theme),
         'application/json',
       );
     } else {
@@ -283,14 +399,21 @@ export default function App() {
   const doImport = (mode: 'replace' | 'merge', file: File) => {
     const reader = new FileReader();
     reader.onload = () => {
-      const parsed = parseImport(String(reader.result ?? ''));
+      const raw = String(reader.result ?? '');
+      const parsed = parseImport(raw);
       if (!parsed) {
         alert('Invalid backup file.');
         return;
       }
       pushUndo();
-      if (mode === 'replace') update(parsed);
-      else update(mergeStates(state, parsed));
+      if (mode === 'replace') {
+        update(parsed);
+        const importedTheme = parseImportTheme(raw);
+        if (importedTheme) {
+          applyTheme(importedTheme);
+          setTheme(importedTheme);
+        }
+      } else update(mergeStates(state, parsed));
       setImportOpen(false);
     };
     reader.readAsText(file);
@@ -302,7 +425,10 @@ export default function App() {
         view={view}
         selectedDate={selectedDate}
         canUndo={canUndo}
-        lastBackupAt={state.lastBackupAt}
+        lastSavedAt={lastSavedAt}
+        lastExportAt={state.lastExportAt ?? null}
+        saveError={saveError}
+        now={now}
         darkMode={theme.mode === 'dark'}
         onView={setView}
         onDate={setSelectedDate}
@@ -329,7 +455,8 @@ export default function App() {
           onAddFunds={() => openAddFunds()}
           onExpectedChange={(frequency: ExpectedFrequency, amount: number) => {
             // expected income is planning only — no undo needed for every keystroke, but keep light
-            update({ ...state, expectedIncome: { frequency, amount } });
+            const amt = Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : 0;
+            update({ ...state, expectedIncome: { frequency, amount: amt } });
           }}
         />
       )}
@@ -343,7 +470,10 @@ export default function App() {
           dueTodayLabel={dueToday.map((b) => b.name).join(', ') || 'bills'}
           onState={update}
           onQuickAdd={handleQuickAdd}
-          onOpenBillsDay={() => setView('bills')}
+          onOpenBillsDay={() => {
+            setBillsSub('day');
+            setView('bills');
+          }}
           onSplit={setSplitEntry}
           onRequestDeleteTab={(tab) => setDeleteTarget({ kind: 'tab', tab })}
           onRequestDeleteColumn={(col) => setDeleteTarget({ kind: 'column', col })}
@@ -378,9 +508,22 @@ export default function App() {
         <BillsView
           state={state}
           selectedDate={selectedDate}
+          sub={billsSub}
+          onSub={setBillsSub}
           onState={update}
           onDate={setSelectedDate}
           onAddFunds={(d) => openAddFunds(d)}
+          onOpenDayEntry={(date, entryId) => {
+            setSelectedDate(date);
+            if (entryId) {
+              const e = state.entries.find((x) => x.id === entryId);
+              if (e) update({ ...state, activeTabId: e.tabId });
+              setHighlightEntryId(entryId);
+              window.setTimeout(() => setHighlightEntryId(null), 3000);
+            }
+            setView('day');
+          }}
+          onToast={(m) => showToast(m)}
           pushUndo={pushUndo}
         />
       )}
@@ -391,6 +534,7 @@ export default function App() {
       {addFundsOpen && (
         <AddFunds
           defaultAmount={state.expectedIncome.amount}
+          expectedFrequency={state.expectedIncome.frequency}
           defaultDate={addFundsDate}
           onConfirm={confirmAddFunds}
           onClose={() => setAddFundsOpen(false)}
@@ -420,6 +564,8 @@ export default function App() {
           onClose={() => setSearchOpen(false)}
           onJump={(date, entryId) => {
             setSelectedDate(date);
+            const hit = state.entries.find((x) => x.id === entryId);
+            if (hit && hit.tabId !== state.activeTabId) update({ ...state, activeTabId: hit.tabId });
             setHighlightEntryId(entryId);
             setView('day');
             setSearchOpen(false);
@@ -446,7 +592,12 @@ export default function App() {
       {exportOpen && (
         <Modal title="Export backup" onClose={() => setExportOpen(false)}>
           <p className="muted small">
-            Downloads OKV-Spend-Smart-backup.json / .csv and updates last backup time.
+            Downloads OKV-Spend-Smart-backup.json / .csv. Your data is already saved in this
+            browser automatically; an export is a copy you keep elsewhere.
+          </p>
+          <p className="small">
+            Last export:{' '}
+            {state.lastExportAt ? new Date(state.lastExportAt).toLocaleString('en-CA') : 'never'}
           </p>
           <div className="modal-actions">
             <button type="button" className="btn primary" onClick={() => doExport('json')}>
@@ -507,7 +658,7 @@ export default function App() {
       {themeOpen && (
         <ThemePanel
           theme={theme}
-          onApplyPreset={(id) => setTheme(applyPreset(id))}
+          onApplyPreset={(id: string) => setTheme(applyPreset(id))}
           onUpdateColor={(key: keyof ThemeColors, value: string) =>
             setTheme(updateColors(theme, { [key]: value }))
           }

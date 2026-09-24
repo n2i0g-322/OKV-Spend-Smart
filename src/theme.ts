@@ -1,4 +1,5 @@
-/** Theme presets, persistence, and CSS-variable application for OKV Spend Smart. */
+/** Theme presets and CSS-variable application for OKV Spend Smart.
+ * Persistence: the theme is saved inside the single `okvSpendSmart` blob (see storage.ts). */
 
 export const THEME_KEY = 'okvSpendSmart:theme';
 
@@ -299,25 +300,27 @@ function normalizeColors(partial: Partial<ThemeColors> | null | undefined): Them
   return base;
 }
 
+/** Coerce any stored/imported theme object into a valid ThemeState. */
+export function normalizeTheme(raw: unknown): ThemeState {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_THEME, colors: { ...classicLight } };
+  const parsed = raw as Partial<ThemeState>;
+  const mode: ThemeMode = parsed.mode === 'dark' ? 'dark' : 'light';
+  const colors = normalizeColors(parsed.colors);
+  const presetId =
+    typeof parsed.presetId === 'string' || parsed.presetId === null
+      ? parsed.presetId ?? null
+      : null;
+  return { mode, colors, presetId };
+}
+
+/** Legacy reader for the old `okvSpendSmart:theme` key (now migrated into the single blob). */
 export function loadTheme(): ThemeState {
   try {
     const raw = localStorage.getItem(THEME_KEY);
-    if (!raw) return { ...DEFAULT_THEME, colors: { ...classicLight } };
-    const parsed = JSON.parse(raw) as Partial<ThemeState>;
-    const mode: ThemeMode = parsed.mode === 'dark' ? 'dark' : 'light';
-    const colors = normalizeColors(parsed.colors);
-    const presetId =
-      typeof parsed.presetId === 'string' || parsed.presetId === null
-        ? parsed.presetId ?? null
-        : null;
-    return { mode, colors, presetId };
+    return normalizeTheme(raw ? JSON.parse(raw) : null);
   } catch {
     return { ...DEFAULT_THEME, colors: { ...classicLight } };
   }
-}
-
-export function saveTheme(theme: ThemeState): void {
-  localStorage.setItem(THEME_KEY, JSON.stringify(theme));
 }
 
 /** Map ThemeColors keys to CSS custom property names (without --). */
@@ -363,14 +366,13 @@ export function applyTheme(theme: ThemeState): void {
 
 export function applyPreset(presetId: string): ThemeState {
   const preset = THEME_PRESETS.find((p) => p.id === presetId);
-  if (!preset) return loadTheme();
+  if (!preset) return { ...DEFAULT_THEME, colors: { ...classicLight } };
   const next: ThemeState = {
     mode: preset.mode,
     presetId: preset.id,
     colors: { ...preset.colors },
   };
   applyTheme(next);
-  saveTheme(next);
   return next;
 }
 
@@ -381,7 +383,6 @@ export function resetTheme(): ThemeState {
     colors: { ...classicLight },
   };
   applyTheme(next);
-  saveTheme(next);
   return next;
 }
 
@@ -397,8 +398,7 @@ export function toggleMode(current: ThemeState): ThemeState {
       colors: { ...darkPreset.colors },
     };
     applyTheme(next);
-    saveTheme(next);
-    return next;
+      return next;
   }
   const lightPreset =
     THEME_PRESETS.find((p) => p.id === 'classic-light') ?? THEME_PRESETS[0];
@@ -408,7 +408,6 @@ export function toggleMode(current: ThemeState): ThemeState {
     colors: { ...lightPreset.colors },
   };
   applyTheme(next);
-  saveTheme(next);
   return next;
 }
 
@@ -423,7 +422,6 @@ export function updateColors(
     colors,
   };
   applyTheme(next);
-  saveTheme(next);
   return next;
 }
 

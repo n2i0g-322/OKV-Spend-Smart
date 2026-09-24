@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import type { AppState, ExpectedFrequency } from '../types';
 import {
   formatMoney,
@@ -14,6 +15,7 @@ import {
   impliedWeekly,
   incomeAmount,
   netSaved,
+  roundCents,
 } from '../money';
 
 interface Props {
@@ -39,9 +41,17 @@ export function SummaryCards({
     filterByRange(state.entries, month.start, month.end),
   );
   const expectedMonth = expectedForMonth(state.expectedIncome, selectedDate);
-  const diff = monthIncome - expectedMonth;
+  const diff = roundCents(monthIncome - expectedMonth);
   const avgs = averages(state.entries);
   const freq = state.expectedIncome.frequency;
+
+  // Local draft so typing "12." or clearing the field doesn't fight the saved number.
+  const saved = state.expectedIncome.amount;
+  const [draft, setDraft] = useState(saved ? String(saved) : '');
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focused.current) setDraft(saved ? String(saved) : '');
+  }, [saved]);
 
   return (
     <div className="summary-cards">
@@ -90,9 +100,17 @@ export function SummaryCards({
             type="number"
             step="0.01"
             min="0"
-            value={state.expectedIncome.amount || ''}
+            value={draft}
             placeholder="0.00"
+            onFocus={() => {
+              focused.current = true;
+            }}
+            onBlur={() => {
+              focused.current = false;
+              setDraft(saved ? String(saved) : '');
+            }}
             onChange={(e) => {
+              setDraft(e.target.value);
               const n = Number(e.target.value);
               onExpectedChange(freq, Number.isFinite(n) ? Math.max(0, n) : 0);
             }}
@@ -106,7 +124,7 @@ export function SummaryCards({
         <p className="compare">
           Expected {formatMoney(expectedMonth)} · Received {formatMoney(monthIncome)} ·{' '}
           <span className={diff >= 0 ? 'ahead' : 'behind'}>
-            {diff >= 0 ? 'Ahead' : 'Behind'} {formatMoney(Math.abs(diff))}
+            {diff === 0 ? 'On plan' : `${diff > 0 ? 'Ahead' : 'Behind'} ${formatMoney(Math.abs(diff))}`}
           </span>
         </p>
         <p className="muted tiny">Planning only — never enters net saved.</p>
