@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AppState, Bill, BillFrequency, BillStatus, Entry, Tab } from '../types';
+import type { AppState, Bill, BillFrequency, Entry, PayFrequency, Tab } from '../types';
 import {
   eachDay,
   formatMoney,
@@ -12,8 +12,17 @@ import {
   parseLocalDate,
   weekRangeMonSun,
 } from '../date';
-import { incomeAmount, netSaved, parseAmount, paydayMarkersInRange, spentAmount } from '../money';
-import { billsOnDate, openOverdue, statusFor } from '../bills';
+import { incomeAmount, netSaved, parseAmount, paydayMarkers, spentAmount, type PaydayMarker } from '../money';
+import {
+  createBill,
+  occurrenceAmount,
+  occurrenceIndexByEntry,
+  occurrencesOn,
+  overdueList,
+  updateBill,
+  type OccurrenceView,
+} from '../bills';
+import { BillLog, OverduePanel, StatusBadge, lastPaidText } from './BillStatus';
 import { ContextMenu, type MenuItem } from './ContextMenu';
 import { ChipWithMenu } from './ChipWithMenu';
 import { Modal } from './Modal';
@@ -31,7 +40,17 @@ interface Props {
   onOpenDayEntry: (date: string, entryId: string | null) => void;
   onToast?: (msg: string) => void;
   pushUndo: () => void;
+  /** Add a manual entry through the duplicate guard. */
+  onAddEntry: (prepared: AppState, entry: Entry) => 'saved' | 'blocked';
+  onOpenOccurrence: (billId: string, dueDate: string) => void;
 }
+
+export const PAY_FREQ_LABEL: Record<PayFrequency, string> = {
+  daily: 'Daily',
+  weekly: 'Weekly',
+  biweekly: 'Every 2 weeks',
+  monthly: 'Monthly',
+};
 
 type Focus = { kind: 'bill' | 'entry'; id: string } | null;
 
@@ -68,10 +87,11 @@ export function BillsView({
   onOpenDayEntry,
   onToast,
   pushUndo,
+  onAddEntry,
+  onOpenOccurrence,
 }: Props) {
   const [editing, setEditing] = useState<Partial<Bill> | null>(null);
-  const [recordPrompt, setRecordPrompt] = useState<{ bill: Bill; date: string } | null>(null);
-  const [paydayNote, setPaydayNote] = useState<string | null>(null);
+  const [paydayNote, setPaydayNote] = useState<PaydayMarker | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [actionDate, setActionDate] = useState<string | null>(null);
   const [tabEntry, setTabEntry] = useState<{
@@ -109,10 +129,13 @@ export function BillsView({
 
   const rangeStart = sub === 'week' ? week.start : month.start;
   const rangeEnd = sub === 'week' ? week.end : month.end;
-  const paydays = useMemo(
-    () => paydayMarkersInRange(state.expectedIncome, rangeStart, rangeEnd, incomeDates),
-    [state.expectedIncome, rangeStart, rangeEnd, incomeDates],
+  const paydayList = useMemo(
+    () => paydayMarkers(state.paySchedule, rangeStart, rangeEnd, incomeDates),
+    [state.paySchedule, rangeStart, rangeEnd, incomeDates],
   );
+  const paydayByDate = useMemo(() => new Map(paydayList.map((p) => [p.date, p])), [paydayList]);
+  const overdue = useMemo(() => overdueList(state.bills, today), [state.bills, today]);
+  const occByEntry = useMemo(() => occurrenceIndexByEntry(state.bills, today), [state.bills, today]);
 
   /** Entries grouped by date: income first, then by tab order. */
   const entriesByDate = useMemo(() => {
@@ -164,78 +187,39 @@ export function BillsView({
     pushUndo();
     const amount = Math.round((Number(editing.amountExpected) || 0) * 100) / 100;
     if (editing.id) {
-      onState({
-        ...state,
-        bills: state.bills.map((b) =>
-          b.id === editing.id
-            ? ({ ...b, ...editing, name: editing.name!.trim(), amountExpected: amount } as Bill)
-            : b,
-        ),
-      });
+      const { occurrences: _o, log: _l, id: _id, ...patch } = editing;
+      void _o;
+      void _l;
+      void _id;
+      onState(updateBill(state, editing.id, { ...patch, name: editing.name.trim(), amountExpected: amount }));
     } else {
-      const bill: Bill = {
-        id: crypto.randomUUID(),
-        name: editing.name.trim(),
-        columnId: editing.columnId,
-        amountExpected: amount,
-        dueDay: editing.dueDay ?? parseLocalDate(editing.nextDueDate!).getDate(),
-        frequency: (editing.frequency as BillFrequency) || 'monthly',
-        nextDueDate: editing.nextDueDate!,
-        payee: editing.payee ?? '',
-        payMethod: editing.payMethod ?? '',
-        payUrl: editing.payUrl ?? '',
-        notes: editing.notes ?? '',
-        color: editing.color ?? '#ef4444',
-        statusByDate: {},
-      };
-      onState({ ...state, bills: [...state.bills, bill] });
+      const { state: next, bill } = createBill(
+        state,
+        {
+          name: editing.name.trim(),
+          columnId: editing.columnId,
+          amountExpected: amount,
+          dueDay: editing.dueDay ?? parseLocalDate(editing.nextDueDate!).getDate(),
+          frequency: (editing.frequency as BillFrequency) || 'monthly',
+          nextDueDate: editing.nextDueDate!,
+          payee: editing.payee ?? '',
+          payMethod: editing.payMethod ?? '',
+          payUrl: editing.payUrl ?? '',
+          notes: editing.notes ?? '',
+          color: editing.color ?? '#ef4444',
+        },
+        { visibleStart: rangeStart, visibleEnd: rangeEnd, today },
+      );
+      onState(next);
       onToast?.(`Bill reminder “${bill.name}” added — no money logged.`);
     }
     setEditing(null);
   };
 
-  const setStatus = (bill: Bill, date: string, status: BillStatus) => {
+  const setPayday = (date: string, freq: PayFrequency, on: boolean) => {
     pushUndo();
-    const next = { ...bill, statusByDate: { ...bill.statusByDate, [date]: status } };
-    onState({ ...state, bills: state.bills.map((b) => (b.id === bill.id ? next : b)) });
-    if (status === 'paid') setRecordPrompt({ bill: next, date });
-  };
-
-  const recordExpense = (bill: Bill, date: string) => {
-    let columns = state.columns;
-    let columnId = bill.columnId && colById.has(bill.columnId) ? bill.columnId : undefined;
-    const tabId = billsTab?.id;
-    if (!tabId) return;
-    if (!columnId) {
-      const existing = columns.find((c) => c.tabId === tabId && c.name === bill.name);
-      if (existing) columnId = existing.id;
-      else {
-        columnId = crypto.randomUUID();
-        columns = [
-          ...columns,
-          {
-            id: columnId,
-            tabId,
-            name: bill.name,
-            color: bill.color,
-            order: columns.filter((c) => c.tabId === tabId).length,
-          },
-        ];
-      }
-    }
-    pushUndo();
-    const entry: Entry = {
-      id: crypto.randomUUID(),
-      date,
-      tabId,
-      columnId,
-      amount: bill.amountExpected,
-      type: 'expense',
-      memo: bill.name,
-      source: 'bills-overview',
-    };
-    onState({ ...state, columns, entries: [...state.entries, entry] });
-    setRecordPrompt(null);
+    onState({ ...state, paySchedule: on ? { frequency: freq, anchor: date } : null });
+    onToast?.(on ? `Payday markers: ${PAY_FREQ_LABEL[freq]} from ${formatShortDate(date)} (markers only, not income).` : 'Payday schedule cleared.');
   };
 
   const startTabEntry = (date: string, tab: Tab) => {
@@ -282,7 +266,6 @@ export function BillsView({
         ];
       }
     }
-    pushUndo();
     const entry: Entry = {
       id: crypto.randomUUID(),
       date: tabEntry.date,
@@ -293,9 +276,11 @@ export function BillsView({
       memo: tabEntry.memo.trim(),
       source: 'bills-overview',
     };
-    onState({ ...state, columns, entries: [...state.entries, entry] });
-    const colName = columns.find((c) => c.id === columnId)?.name ?? '';
-    onToast?.(`Added ${formatMoney(amount)} to ${tab.name} → ${colName} on ${formatShortDate(entry.date)}.`);
+    const result = onAddEntry({ ...state, columns }, entry);
+    if (result === 'saved') {
+      const colName = columns.find((c) => c.id === columnId)?.name ?? '';
+      onToast?.(`Added ${formatMoney(amount)} to ${tab.name} → ${colName} on ${formatShortDate(entry.date)}.`);
+    }
     setTabEntry(null);
   };
 
@@ -318,13 +303,8 @@ export function BillsView({
     });
   };
 
-  const billsForDay = billsOnDate(state.bills, selectedDate);
-  const dayBills = [
-    ...billsForDay,
-    ...openOverdue(state.bills, selectedDate).filter(
-      (b) => !billsForDay.some((x) => x.id === b.id),
-    ),
-  ];
+  // Only occurrences due ON this day. Earlier overdue items appear under "Overdue from earlier" on Today only.
+  const dayOccs = occurrencesOn(state.bills, selectedDate, today);
   const dayEntries = entriesByDate.get(selectedDate) ?? [];
 
   const renderEntryChip = (e: Entry, date: string) => {
@@ -347,41 +327,81 @@ export function BillsView({
     );
   };
 
-  const renderBillChip = (b: Bill, date: string) => {
-    const st = statusFor(b, date);
+  const renderBillChip = (o: OccurrenceView, date: string) => {
+    const b = o.bill;
+    const st = o.effective;
     const color = b.color || BILL_RED;
     return (
-      <ChipWithMenu key={b.id} className="chip bill" onMenu={(x, y) => billMenu(b, x, y)}>
+      <ChipWithMenu key={o.occurrenceId} className="chip bill" onMenu={(x, y) => billMenu(b, x, y)}>
         <button
           type="button"
           className={`bill-chip-btn status-${st}`}
           style={{ background: `${color}22`, color, borderLeft: `3px dashed ${color}` }}
-          title={`Bill reminder (${st}) — not money until logged`}
+          title={`Bill ${b.name} — ${st}${st === 'paid' ? '' : ' — not money until a payment is recorded'}`}
+          data-status={st}
           onClick={(e) => {
             e.stopPropagation();
             openDay(date, { kind: 'bill', id: b.id });
           }}
         >
-          {st === 'paid' ? '✓ ' : '🔔 '}
-          {b.name} {formatMoney(b.amountExpected)}
+          {st === 'paid' ? '✓ ' : st === 'overdue' ? '⚠ ' : '🔔 '}
+          {b.name} {formatMoney(occurrenceAmount(state, o, b))}
+          <span className={`chip-status ${st}`}>{st}</span>
         </button>
       </ChipWithMenu>
     );
   };
 
-  const paydayChip = (date: string, label = 'Payday') => (
+  const paydayChip = (m: PaydayMarker, label?: string) => (
     <button
       type="button"
-      className="chip payday"
-      title="Expected pay date (planning only)"
+      className={`chip payday${m.income ? ' received' : ''}`}
+      title={m.income ? 'Income received this day (marker)' : 'Scheduled payday (planning only, not income)'}
       onClick={(e) => {
         e.stopPropagation();
-        setPaydayNote(date);
+        setPaydayNote(m);
       }}
     >
-      ● {label}
+      ● {label ?? (m.income && m.scheduled ? 'Payday ✓' : m.income ? 'Paid in ✓' : 'Payday')}
     </button>
   );
+
+  const renderOccDetail = (o: OccurrenceView) => {
+    const b = o.bill;
+    const focused = focus?.kind === 'bill' && focus.id === b.id && o.dueDate === selectedDate;
+    const linked = o.linkedEntryId ? state.entries.find((e) => e.id === o.linkedEntryId) : undefined;
+    return (
+      <li key={o.occurrenceId} ref={focused ? focusRef : undefined} className={focused ? 'focused' : ''} data-testid="occ-detail">
+        <div className="bill-detail-head">
+          <strong style={{ color: b.color }}>🔔 {b.name}</strong>
+          <span>{formatMoney(occurrenceAmount(state, o, b))}</span>
+          <span className="muted small">due {o.dueDate}</span>
+          <StatusBadge status={o.effective} />
+          <span className="muted tiny">{b.frequency}</span>
+          <button type="button" className="icon-btn tiny" onClick={(e) => billMenu(b, e.clientX, e.clientY)}>
+            ⋯
+          </button>
+        </div>
+        <p className="muted small">
+          {b.payee && <>Payee: {b.payee} · </>}
+          {b.payMethod && <>Method: {b.payMethod} · </>}
+          {b.notes && <>Notes: {b.notes} · </>}
+          {lastPaidText(b)}
+          {linked && <> · 🔗 payment {formatMoney(linked.amount)} on {linked.date} ({linked.source})</>}
+        </p>
+        <div className="row-actions">
+          {b.payUrl && (
+            <a className="btn ghost sm" href={b.payUrl} target="_blank" rel="noreferrer">
+              Open pay URL
+            </a>
+          )}
+          <button type="button" className="btn primary sm" onClick={() => onOpenOccurrence(b.id, o.dueDate)}>
+            {o.status === 'paid' ? 'Open / correct' : 'Mark paid / skip / cancel…'}
+          </button>
+        </div>
+      </li>
+    );
+  };
 
   const actionTabs = tabsSorted;
 
@@ -410,6 +430,8 @@ export function BillsView({
         </button>
       </div>
 
+      <OverduePanel list={overdue} state={state} onOpen={onOpenOccurrence} />
+
       {sub === 'month' && (
         <div className="bills-calendar card">
           <h3>{formatMonthYear(selectedDate)}</h3>
@@ -424,9 +446,8 @@ export function BillsView({
           <div className="cal-grid">
             {grid.flat().map((cell, i) => {
               if (!cell) return <div key={`e${i}`} className="cal-cell empty" />;
-              const bills = billsOnDate(state.bills, cell);
-              const isPayday = paydays.includes(cell);
-              const overdue = bills.filter((b) => statusFor(b, cell) === 'overdue').length;
+              const occs = occurrencesOn(state.bills, cell, today);
+              const pay = paydayByDate.get(cell);
               const entries = entriesByDate.get(cell) ?? [];
               const shown = entries.slice(0, MAX_ENTRY_CHIPS);
               const more = entries.length - shown.length;
@@ -453,8 +474,8 @@ export function BillsView({
                   >
                     {parseLocalDate(cell).getDate()}
                   </button>
-                  {isPayday && paydayChip(cell)}
-                  {bills.map((b) => renderBillChip(b, cell))}
+                  {pay && paydayChip(pay)}
+                  {occs.map((o) => renderBillChip(o, cell))}
                   {shown.map((e) => renderEntryChip(e, cell))}
                   {more > 0 && (
                     <button
@@ -468,7 +489,11 @@ export function BillsView({
                       +{more} more
                     </button>
                   )}
-                  {overdue > 0 && <span className="overdue-count">{overdue} overdue</span>}
+                  {cell === today && overdue.length > 0 && (
+                    <span className="overdue-count" title="Overdue bills as of today">
+                      ⚠ {overdue.length} overdue
+                    </span>
+                  )}
                 </div>
               );
             })}
@@ -476,6 +501,9 @@ export function BillsView({
           <div className="cal-legend">
             <span>
               <i className="leg payday" /> Payday = marker only, not income
+              {state.paySchedule
+                ? ` (${PAY_FREQ_LABEL[state.paySchedule.frequency]} from ${state.paySchedule.anchor})`
+                : ' (no schedule — income dates only)'}
             </span>
             <span>
               <i className="leg bill" /> 🔔 Bill = reminder, not an expense until logged
@@ -509,8 +537,8 @@ export function BillsView({
                   {formatShortDate(d)}
                 </button>
               </h4>
-              {paydays.includes(d) && paydayChip(d)}
-              {billsOnDate(state.bills, d).map((b) => renderBillChip(b, d))}
+              {paydayByDate.get(d) && paydayChip(paydayByDate.get(d)!)}
+              {occurrencesOn(state.bills, d, today).map((o) => renderBillChip(o, d))}
               {(entriesByDate.get(d) ?? []).map((e) => renderEntryChip(e, d))}
             </div>
           ))}
@@ -525,61 +553,22 @@ export function BillsView({
               + Add for this day
             </button>
           </div>
-          {paydayMarkersInRange(state.expectedIncome, selectedDate, selectedDate, incomeDates).includes(
-            selectedDate,
-          ) && paydayChip(selectedDate, 'Payday marker (planning only)')}
+          {(() => {
+            const m = paydayMarkers(state.paySchedule, selectedDate, selectedDate, incomeDates)[0];
+            return m ? paydayChip(m, m.income ? 'Income received (marker)' : 'Payday marker (planning only)') : null;
+          })()}
 
-          <h4 className="bills-day-section">Scheduled bills</h4>
-          {dayBills.length === 0 && <p className="muted">No bills due.</p>}
+          <h4 className="bills-day-section">Bills due this day</h4>
+          {dayOccs.length === 0 && <p className="muted">No bills due.</p>}
           <ul className="bill-detail-list">
-            {dayBills.map((b) => {
-              const st = statusFor(b, selectedDate);
-              const focused = focus?.kind === 'bill' && focus.id === b.id;
-              return (
-                <li
-                  key={b.id}
-                  ref={focused ? focusRef : undefined}
-                  className={focused ? 'focused' : ''}
-                >
-                  <div className="bill-detail-head">
-                    <strong style={{ color: b.color }}>🔔 {b.name}</strong>
-                    <span>{formatMoney(b.amountExpected)} expected</span>
-                    <span className={`status ${st}`}>{st}</span>
-                    <span className="muted tiny">{b.frequency}</span>
-                    <button
-                      type="button"
-                      className="icon-btn tiny"
-                      onClick={(e) => billMenu(b, e.clientX, e.clientY)}
-                    >
-                      ⋯
-                    </button>
-                  </div>
-                  <p className="muted small">
-                    {b.payee && <>Payee: {b.payee} · </>}
-                    {b.payMethod && <>Method: {b.payMethod} · </>}
-                    {b.notes && <>Notes: {b.notes}</>}
-                  </p>
-                  <div className="row-actions">
-                    {b.payUrl && (
-                      <a className="btn ghost sm" href={b.payUrl} target="_blank" rel="noreferrer">
-                        Open pay URL
-                      </a>
-                    )}
-                    {(['upcoming', 'due', 'paid', 'skipped'] as BillStatus[]).map((s) => (
-                      <button
-                        key={s}
-                        type="button"
-                        className={`btn sm${st === s ? ' primary' : ' ghost'}`}
-                        onClick={() => setStatus(b, selectedDate, s)}
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                </li>
-              );
-            })}
+            {dayOccs.map((o) => renderOccDetail(o))}
           </ul>
+          {selectedDate === today && overdue.length > 0 && (
+            <>
+              <h4 className="bills-day-section">Overdue from earlier ({overdue.length})</h4>
+              <ul className="bill-detail-list">{overdue.map((o) => renderOccDetail(o))}</ul>
+            </>
+          )}
 
           <h4 className="bills-day-section">Money activity (real entries)</h4>
           {dayEntries.length === 0 ? (
@@ -594,12 +583,8 @@ export function BillsView({
                 {dayEntries.map((e) => {
                   const tab = tabById.get(e.tabId);
                   const col = colById.get(e.columnId);
-                  const bill =
-                    e.source === 'bills-overview'
-                      ? state.bills.find(
-                          (b) => (b.columnId && b.columnId === e.columnId) || b.name === e.memo,
-                        )
-                      : undefined;
+                  const link = occByEntry.get(e.id);
+                  const bill = link?.occ.bill;
                   const focused = focus?.kind === 'entry' && focus.id === e.id;
                   return (
                     <li
@@ -615,6 +600,16 @@ export function BillsView({
                         <span className={`amt ${e.type}`}>{entryLabel(e)}</span>
                         <span className="status">{e.type}</span>
                         <span className="muted tiny">via {e.source}</span>
+                        {link && (
+                          <button
+                            type="button"
+                            className="linkish small"
+                            onClick={() => onOpenOccurrence(link.occ.billId, link.occ.dueDate)}
+                          >
+                            🔗 {link.occ.bill.name} due {link.occ.dueDate}
+                            {link.role === 'extra' ? ' (extra payment)' : ''} <StatusBadge status={link.occ.effective} />
+                          </button>
+                        )}
                       </div>
                       <p className="muted small">
                         {e.memo ? <>Memo: {e.memo}</> : <>No memo</>}
@@ -686,6 +681,24 @@ export function BillsView({
               </button>
             ))}
           </div>
+          <fieldset className="payday-boxes" data-testid="payday-boxes">
+            <legend>Payday markers — this day is the anchor (markers only, not income)</legend>
+            {(['daily', 'weekly', 'biweekly', 'monthly'] as PayFrequency[]).map((f) => {
+              const checked = state.paySchedule?.frequency === f && state.paySchedule.anchor === actionDate;
+              return (
+                <label key={f} className="radio">
+                  <input type="checkbox" checked={checked} onChange={(e) => setPayday(actionDate, f, e.target.checked)} />{' '}
+                  {PAY_FREQ_LABEL[f]}
+                </label>
+              );
+            })}
+            {state.paySchedule && state.paySchedule.anchor !== actionDate && (
+              <p className="muted tiny">
+                Current: {PAY_FREQ_LABEL[state.paySchedule.frequency]} from {state.paySchedule.anchor}. Checking a box moves the
+                anchor here.
+              </p>
+            )}
+          </fieldset>
           <div className="modal-actions">
             <button
               type="button"
@@ -877,6 +890,15 @@ export function BillsView({
               onChange={(e) => setEditing({ ...editing, color: e.target.value })}
             />
           </label>
+          {editing.id && (() => {
+            const b = state.bills.find((x) => x.id === editing.id);
+            return b ? (
+              <>
+                <p className="small">{lastPaidText(b)}</p>
+                <BillLog bill={b} />
+              </>
+            ) : null;
+          })()}
           <div className="modal-actions">
             <button type="button" className="btn ghost" onClick={() => setEditing(null)}>
               Cancel
@@ -888,34 +910,25 @@ export function BillsView({
         </Modal>
       )}
 
-      {recordPrompt && (
-        <Modal title="Record expense?" onClose={() => setRecordPrompt(null)}>
-          <p>
-            Also record {formatMoney(recordPrompt.bill.amountExpected)} under Bills →{' '}
-            {billColumns.find((c) => c.id === recordPrompt.bill.columnId)?.name ??
-              recordPrompt.bill.name}{' '}
-            on {recordPrompt.date}?
-          </p>
-          <p className="muted small">Default is No — Paid is checklist only.</p>
-          <div className="modal-actions">
-            <button type="button" className="btn primary" autoFocus onClick={() => setRecordPrompt(null)}>
-              No
-            </button>
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={() => recordExpense(recordPrompt.bill, recordPrompt.date)}
-            >
-              Yes, record expense
-            </button>
-          </div>
-        </Modal>
-      )}
-
       {paydayNote && (
-        <Modal title="Payday marker" onClose={() => setPaydayNote(null)}>
-          <p>Expected pay date (planning only).</p>
-          <p className="muted small">Nothing is saved until you confirm Add funds.</p>
+        <Modal title={`Payday — ${formatShortDate(paydayNote.date)}, ${paydayNote.date.slice(0, 4)}`} onClose={() => setPaydayNote(null)}>
+          <p>
+            {paydayNote.scheduled && state.paySchedule
+              ? `Scheduled payday (${PAY_FREQ_LABEL[state.paySchedule.frequency]} from ${state.paySchedule.anchor}).`
+              : 'Marked because income was received this day.'}
+          </p>
+          {paydayNote.income && (
+            <p className="small">
+              Received this day:{' '}
+              {formatMoney(incomeAmount((entriesByDate.get(paydayNote.date) ?? []).filter((e) => e.type === 'income')))}
+            </p>
+          )}
+          {state.expectedIncome.amount > 0 && (
+            <p className="muted small">
+              Box 3 plan: {formatMoney(state.expectedIncome.amount)} {state.expectedIncome.frequency}.
+            </p>
+          )}
+          <p className="muted small">Planning note only. Nothing is saved until you confirm Add funds.</p>
           <div className="modal-actions">
             <button type="button" className="btn ghost" onClick={() => setPaydayNote(null)}>
               Close
@@ -924,7 +937,7 @@ export function BillsView({
               type="button"
               className="btn primary"
               onClick={() => {
-                const d = paydayNote;
+                const d = paydayNote.date;
                 setPaydayNote(null);
                 onAddFunds(d);
               }}

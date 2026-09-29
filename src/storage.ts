@@ -1,4 +1,5 @@
-import type { AppState, Bill, ChartConfig, Column, Entry, Rule, Tab, ViewName } from './types';
+import type { AppState, ChartConfig, Column, Entry, PaySchedule, Rule, Tab, ViewName } from './types';
+import { migrateBills } from './bills';
 import { createSeedState, ensureExtraFundsColumn } from './seed';
 import { DEFAULT_THEME, normalizeTheme, type ThemeState } from './theme';
 import { isValidYMD, localToday } from './date';
@@ -16,7 +17,13 @@ import { isValidYMD, localToday } from './date';
 const KEY = 'okvSpendSmart';
 const LEGACY_STATE_KEY = `${KEY}:state`;
 const LEGACY_THEME_KEY = `${KEY}:theme`;
-export const BLOB_SCHEMA = 2;
+/**
+ * 3 = bill occurrences + action log + payday schedule (fix pass 2).
+ * Loading an older blob migrates in memory and keeps a verbatim copy under
+ * `okvSpendSmart:pre-schema3-backup` (written once, never deleted).
+ */
+export const BLOB_SCHEMA = 3;
+const PRE_MIGRATION_KEY = `${KEY}:pre-schema3-backup`;
 
 const VIEWS: ViewName[] = ['day', 'week', 'month', 'year', 'bills', 'statistics'];
 
@@ -81,16 +88,22 @@ export function normalizeState(raw: unknown): AppState | null {
   const exp = (p.expectedIncome ?? {}) as Partial<AppState['expectedIncome']>;
   const freq = exp.frequency === 'daily' || exp.frequency === 'yearly' ? exp.frequency : 'monthly';
   const amount = Number(exp.amount);
+  const ps = (p.paySchedule ?? null) as Partial<PaySchedule> | null;
+  const paySchedule: PaySchedule | null =
+    ps && ['daily', 'weekly', 'biweekly', 'monthly'].includes(ps.frequency as string) && isValidYMD(ps.anchor)
+      ? { frequency: ps.frequency as PaySchedule['frequency'], anchor: ps.anchor }
+      : null;
   const state: AppState = {
-    version: 1,
+    version: 2,
     tabs,
     columns: arr<Column>(p.columns),
     entries: arr<Entry>(p.entries).filter(
       (e) => e && typeof e === 'object' && Number.isFinite(Number(e.amount)),
     ).map((e) => ({ ...e, amount: Number(e.amount) })),
-    bills: arr<Bill>(p.bills).map((b) => ({ ...b, statusByDate: b.statusByDate ?? {} })),
+    bills: [],
     rules: arr<Rule>(p.rules),
     expectedIncome: { frequency: freq, amount: Number.isFinite(amount) && amount > 0 ? amount : 0 },
+    paySchedule,
     charts: Array.isArray(p.charts) ? arr<ChartConfig>(p.charts) : seed.charts,
     lastBackupAt: typeof p.lastBackupAt === 'string' ? p.lastBackupAt : null,
     lastExportAt: typeof p.lastExportAt === 'string' ? p.lastExportAt : null,
@@ -100,7 +113,23 @@ export function normalizeState(raw: unknown): AppState | null {
         ? p.activeTabId
         : (tabs[0]?.id ?? null),
   };
+  // Bills: schema ≤2 per-date statuses → occurrences (idempotent for schema 3).
+  state.bills = migrateBills(arr<unknown>(p.bills), state);
   return ensureExtraFundsColumn(state);
+}
+
+/** Keep one verbatim copy of a pre-schema-3 blob before the first migrated save overwrites it. */
+function keepPreMigrationCopy(ls: Storage, raw: string | null, blob: Partial<StoredBlob> | null | undefined) {
+  if (!raw || !blob || typeof blob !== 'object') return;
+  const schema = typeof blob.schema === 'number' ? blob.schema : 0;
+  const bills = ('state' in blob ? (blob.state as unknown as Record<string, unknown>)?.bills : (blob as Record<string, unknown>).bills) as unknown[] | undefined;
+  const hasLegacyBills = Array.isArray(bills) && bills.some((b) => b && typeof b === 'object' && !Array.isArray((b as Record<string, unknown>).occurrences));
+  if (schema >= BLOB_SCHEMA && !hasLegacyBills) return;
+  try {
+    if (!ls.getItem(PRE_MIGRATION_KEY)) ls.setItem(PRE_MIGRATION_KEY, raw);
+  } catch {
+    /* ignore quota */
+  }
 }
 
 function normalizeUi(raw: unknown): UiPrefs {
@@ -125,6 +154,7 @@ export function loadAll(): LoadResult {
     // Blob may be the wrapped format, or (defensively) a bare AppState.
     const st = normalizeState('state' in blob ? blob.state : blob);
     if (st) {
+      keepPreMigrationCopy(ls, blobRaw, blob);
       const legacyTheme = safeParse(ls.getItem(LEGACY_THEME_KEY));
       return {
         state: st,
@@ -148,6 +178,7 @@ export function loadAll(): LoadResult {
   const legacyState = normalizeState(safeParse(ls.getItem(LEGACY_STATE_KEY)));
   const legacyThemeRaw = safeParse(ls.getItem(LEGACY_THEME_KEY));
   if (legacyState) {
+    keepPreMigrationCopy(ls, ls.getItem(LEGACY_STATE_KEY), { schema: 0, state: legacyState } as never);
     return {
       state: legacyState,
       theme: normalizeTheme(legacyThemeRaw ?? null),
@@ -272,6 +303,7 @@ export function mergeStates(current: AppState, incoming: AppState): AppState {
     charts: [...current.charts, ...incoming.charts.filter((c) => !chartIds.has(c.id))],
     expectedIncome:
       incoming.expectedIncome.amount > 0 ? incoming.expectedIncome : current.expectedIncome,
+    paySchedule: current.paySchedule ?? incoming.paySchedule ?? null,
     lastBackupAt: current.lastBackupAt,
     hasSeenWelcome: current.hasSeenWelcome || incoming.hasSeenWelcome,
   };
@@ -292,4 +324,4 @@ export function parseImportTheme(raw: string): ThemeState | null {
   return normalizeTheme(parsed.theme);
 }
 
-export { KEY, LEGACY_STATE_KEY, LEGACY_THEME_KEY };
+export { KEY, LEGACY_STATE_KEY, LEGACY_THEME_KEY, PRE_MIGRATION_KEY };

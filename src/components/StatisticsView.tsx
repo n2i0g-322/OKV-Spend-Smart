@@ -1,8 +1,7 @@
 import { useMemo } from 'react';
 import type { AppState } from '../types';
 import {
-  daysInMonth,
-  eachDay,
+  formatMonthYear,
   formatMoney,
   formatShortDate,
   localToday,
@@ -14,6 +13,8 @@ import {
 } from '../date';
 import {
   averages,
+  calendarAverages,
+  monthEndNet,
   expectedForMonth,
   filterByRange,
   incomeAmount,
@@ -39,92 +40,60 @@ export function StatisticsView({ state, selectedDate }: Props) {
     const weeks = uniqueWeeks(entries);
     const months = uniqueMonths(entries);
 
-    // best / worst save day
-    if (days.length >= 1) {
-      let best = days[0];
-      let worst = days[0];
-      let bestNet = netSaved(entries.filter((e) => e.date === best));
-      let worstNet = bestNet;
-      for (const d of days) {
-        const n = netSaved(entries.filter((e) => e.date === d));
-        if (n > bestNet) {
-          bestNet = n;
-          best = d;
-        }
-        if (n < worstNet) {
-          worstNet = n;
-          worst = d;
-        }
+    // best / worst save day / week / month — every tied period is listed
+    const bw = (
+      title: string,
+      unit: string,
+      items: { label: string; net: number }[],
+    ) => {
+      if (items.length < 2) {
+        out.push({ title, body: <>Not enough data yet.</> });
+        return;
       }
+      const cents = items.map((i) => Math.round(i.net * 100));
+      const max = Math.max(...cents);
+      const min = Math.min(...cents);
+      const best = items.filter((_, i) => cents[i] === max).map((i) => i.label);
+      const worst = items.filter((_, i) => cents[i] === min).map((i) => i.label);
       out.push({
-        title: 'Best / worst save day',
-        body: (
-          <>
-            Best {formatShortDate(best)} {formatMoney(bestNet)}
-            <br />
-            Worst {formatShortDate(worst)} {formatMoney(worstNet)}
-          </>
-        ),
+        title,
+        body:
+          max === min ? (
+            <>
+              All {items.length} {unit}s tied at {formatMoney(max / 100)}: {best.join(', ')}
+            </>
+          ) : (
+            <>
+              Best {formatMoney(max / 100)} — {best.join(', ')}
+              {best.length > 1 ? ` (${best.length}-way tie)` : ''}
+              <br />
+              Worst {formatMoney(min / 100)} — {worst.join(', ')}
+              {worst.length > 1 ? ` (${worst.length}-way tie)` : ''}
+            </>
+          ),
       });
-    }
-
-    if (weeks.length >= 1) {
-      let best = weeks[0];
-      let worst = weeks[0];
-      let bestNet = -Infinity;
-      let worstNet = Infinity;
-      for (const w of weeks) {
-        const range = weekRangeMonSun(w);
-        const n = netSaved(filterByRange(entries, range.start, range.end));
-        if (n > bestNet) {
-          bestNet = n;
-          best = w;
-        }
-        if (n < worstNet) {
-          worstNet = n;
-          worst = w;
-        }
-      }
-      out.push({
-        title: 'Best / worst save week',
-        body: (
-          <>
-            Best week of {formatShortDate(best)} {formatMoney(bestNet)}
-            <br />
-            Worst week of {formatShortDate(worst)} {formatMoney(worstNet)}
-          </>
-        ),
-      });
-    }
-
-    if (months.length >= 1) {
-      let best = months[0];
-      let worst = months[0];
-      let bestNet = -Infinity;
-      let worstNet = Infinity;
-      for (const m of months) {
-        const range = monthBounds(m);
-        const n = netSaved(filterByRange(entries, range.start, range.end));
-        if (n > bestNet) {
-          bestNet = n;
-          best = m;
-        }
-        if (n < worstNet) {
-          worstNet = n;
-          worst = m;
-        }
-      }
-      out.push({
-        title: 'Best / worst save month',
-        body: (
-          <>
-            Best {best.slice(0, 7)} {formatMoney(bestNet)}
-            <br />
-            Worst {worst.slice(0, 7)} {formatMoney(worstNet)}
-          </>
-        ),
-      });
-    }
+    };
+    bw(
+      'Best / worst save day',
+      'day',
+      days.map((d) => ({ label: formatShortDate(d), net: netSaved(entries.filter((e) => e.date === d)) })),
+    );
+    bw(
+      'Best / worst save week',
+      'week',
+      weeks.map((w) => {
+        const r = weekRangeMonSun(w);
+        return { label: `week of ${formatShortDate(r.start)}`, net: netSaved(filterByRange(entries, r.start, r.end)) };
+      }),
+    );
+    bw(
+      'Best / worst save month',
+      'month',
+      months.map((m) => {
+        const r = monthBounds(m);
+        return { label: formatMonthYear(r.start), net: netSaved(filterByRange(entries, r.start, r.end)) };
+      }),
+    );
 
     // most expensive tab/column
     const expenseEntries = entries.filter((e) => e.type === 'expense' || e.type === 'refund');
@@ -137,30 +106,34 @@ export function StatisticsView({ state, selectedDate }: Props) {
       for (const c of state.columns) {
         byCol.set(c.id, spentAmount(entries.filter((e) => e.columnId === c.id)));
       }
-      const topTab = [...byTab.entries()].sort((a, b) => b[1] - a[1])[0];
-      const topCol = [...byCol.entries()].sort((a, b) => b[1] - a[1])[0];
-      if (topTab && topTab[1] > 0) {
-        const t = state.tabs.find((x) => x.id === topTab[0]);
-        out.push({
-          title: 'Most expensive tab (all-time)',
-          body: (
-            <>
-              {t?.name} {formatMoney(topTab[1])}
-            </>
-          ),
-        });
-      }
-      if (topCol && topCol[1] > 0) {
-        const c = state.columns.find((x) => x.id === topCol[0]);
-        out.push({
-          title: 'Most expensive column (all-time)',
-          body: (
-            <>
-              {c?.name} {formatMoney(topCol[1])}
-            </>
-          ),
-        });
-      }
+      const tops = (m: Map<string, number>) => {
+        const max = Math.max(0, ...[...m.values()].map((v) => Math.round(v * 100)));
+        return { max: max / 100, ids: max > 0 ? [...m.entries()].filter(([, v]) => Math.round(v * 100) === max).map(([k]) => k) : [] };
+      };
+      const tt = tops(byTab);
+      const tc = tops(byCol);
+      out.push({
+        title: 'Most expensive tab (all-time)',
+        body: tt.ids.length ? (
+          <>
+            {tt.ids.map((id) => state.tabs.find((x) => x.id === id)?.name).join(', ')} {formatMoney(tt.max)}
+            {tt.ids.length > 1 ? ' (tie)' : ''}
+          </>
+        ) : (
+          <>Not enough data yet.</>
+        ),
+      });
+      out.push({
+        title: 'Most expensive column (all-time)',
+        body: tc.ids.length ? (
+          <>
+            {tc.ids.map((id) => state.columns.find((x) => x.id === id)?.name).join(', ')} {formatMoney(tc.max)}
+            {tc.ids.length > 1 ? ' (tie)' : ''}
+          </>
+        ) : (
+          <>Not enough data yet.</>
+        ),
+      });
 
       const yb = yearBounds(selectedDate);
       const yearEntries = filterByRange(entries, yb.start, yb.end);
@@ -276,11 +249,25 @@ export function StatisticsView({ state, selectedDate }: Props) {
           title: 'Income vs expenses (this vs last month)',
           body: (
             <>
-              This: in {formatMoney(incomeAmount(tEnt))} / out{' '}
-              {formatMoney(spentAmount(tEnt))} / net {formatMoney(netSaved(tEnt))}
+              This ({formatMonthYear(thisM.start)}):{' '}
+              {tEnt.length ? (
+                <>
+                  in {formatMoney(incomeAmount(tEnt))} / out {formatMoney(spentAmount(tEnt))} / net{' '}
+                  {formatMoney(netSaved(tEnt))}
+                </>
+              ) : (
+                'Not enough data yet.'
+              )}
               <br />
-              Last: in {formatMoney(incomeAmount(lEnt))} / out{' '}
-              {formatMoney(spentAmount(lEnt))} / net {formatMoney(netSaved(lEnt))}
+              Last ({formatMonthYear(lastM.start)}):{' '}
+              {lEnt.length ? (
+                <>
+                  in {formatMoney(incomeAmount(lEnt))} / out {formatMoney(spentAmount(lEnt))} / net{' '}
+                  {formatMoney(netSaved(lEnt))}
+                </>
+              ) : (
+                'Not enough data yet.'
+              )}
             </>
           ),
         });
@@ -320,35 +307,49 @@ export function StatisticsView({ state, selectedDate }: Props) {
       }
     }
 
-    // projected month-end
+    // month-end net: past month = final actual; current month = calendar pace (zero days count)
     {
-      const thisM = monthBounds(selectedDate);
-      const tEnt = filterByRange(entries, thisM.start, thisM.end);
-      const daysWith = uniqueDays(tEnt).length;
-      if (daysWith >= 2) {
-        const avgDaily = netSaved(tEnt) / daysWith;
-        const dim = daysInMonth(selectedDate);
-        const projected = avgDaily * dim;
-        out.push({
-          title: 'Projected month-end net',
-          body: (
-            <>
-              If current daily average ({formatMoney(avgDaily)}) continues:{' '}
-              {formatMoney(projected)}
-            </>
+      const me = monthEndNet(entries, selectedDate, localToday());
+      const label = formatMonthYear(me.monthStart);
+      out.push({
+        title: me.kind === 'final' ? `Month-end net — ${label}` : `Projected month-end net — ${label}`,
+        body:
+          me.kind === 'final' ? (
+            me.hasEntries ? (
+              <span data-testid="final-net">
+                Final net <strong>{formatMoney(me.net)}</strong> (month complete — actual, no projection)
+              </span>
+            ) : (
+              <>Not enough data yet.</>
+            )
+          ) : me.kind === 'projected' ? (
+            <span data-testid="projected-net">
+              Projected <strong>{formatMoney(me.projected)}</strong> = month-to-date {formatMoney(me.mtd)} +{' '}
+              {me.remaining} remaining day{me.remaining === 1 ? '' : 's'} × {formatMoney(me.pace)}/day
+              <br />
+              <span className="muted small">
+                Pace = MTD net ÷ {me.daysElapsed} calendar day{me.daysElapsed === 1 ? '' : 's'} (1st through today, zero days
+                count).
+              </span>
+            </span>
+          ) : (
+            <>Not enough data yet.</>
           ),
-        });
-      }
+      });
     }
 
+    const ca = calendarAverages(entries, undefined, localToday());
     const avgs = averages(entries);
     out.push({
       title: 'All-time snapshot',
-      body: (
+      body: ca.hasData ? (
         <>
-          Net {formatMoney(avgs.allTime)} across {avgs.daysWithData} days /{' '}
-          {avgs.weeksWithData} weeks / {avgs.monthsWithData} months with data.
+          Net {formatMoney(ca.allTime)} over {ca.calendarDays} calendar days / {ca.calendarWeeks} Mon–Sun weeks /{' '}
+          {ca.calendarMonths} months ({formatShortDate(ca.spanStart)}, {ca.spanStart.slice(0, 4)} – {formatShortDate(ca.spanEnd)},{' '}
+          {ca.spanEnd.slice(0, 4)}). {avgs.daysWithData} days have entries.
         </>
+      ) : (
+        <>Not enough data yet.</>
       ),
     });
 
@@ -376,6 +377,3 @@ export function StatisticsView({ state, selectedDate }: Props) {
     </div>
   );
 }
-
-// keep imports used
-void eachDay;

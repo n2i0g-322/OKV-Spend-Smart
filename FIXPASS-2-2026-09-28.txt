@@ -1,0 +1,82 @@
+OKV Spend Smart fix pass. Do not rename the app. CAD. Local dates. Mon–Sun weeks. Key okvSpendSmart. Save after every committed action. Hydrate storage before seed.
+
+Do not change ledger math:
+net = income − expenses + refunds.
+Markers, expected pay, unpaid/skipped bills, and “paid reminder only” are not money.
+
+Skip refund UI this pass.
+
+# 1 Box 4 — calendar averages
+spanStart = first entry date. spanEnd = today (or last day of a past range).
+avg daily   = all-time net / calendar days in span
+avg weekly  = all-time net / Mon–Sun weeks overlapping span (empty weeks count)
+avg monthly = all-time net / calendar months overlapping span
+Headline must say the denominator. Optional muted line: old “days with entries” figure.
+Sim check: $1,500 over ~92 days → daily headline ≈ $16.30, not $27.27.
+
+# 2 Projected month-end — same calendar pace
+Past month: “Final net” = actual month net. No projection.
+Current month: pace = month-to-date net / days from 1st through today (zeros count).
+projected = MTD net + remaining days × pace.
+Completed $500 month must show Final $500, not $789.
+
+# 3 Bills own status. One payment unless the user overrides.
+Bill occurrence = { occurrenceId, billId, dueDate, status, linkedEntryId|null }.
+Status always visible on chip, day detail, and linked ledger row:
+scheduled | due | overdue | paid | skipped | cancelled.
+
+Create bill → create occurrences in the visible range + the next upcoming one.
+Does NOT create expense rows until the user records a payment.
+
+Mark Paid:
+- Record payment (default): status=paid, create ONE expense, source="bill-paid", link ids, stamp paidAt.
+- Reminder only: status=paid, no expense.
+- Skip / cancel: no expense.
+
+If user adds a manual expense similar to an occurrence
+(same bill+dueDate, OR same date+tab+amount within $0.01, OR same tab+amount within $0.01 and dueDate within 5 days, OR a future matching occurrence):
+block save and show:
+bill name, amount, due date, status,
+“Last paid: {local date time}” or “Never paid”,
+last 10 action-log lines,
+buttons: Open existing (default) | Link to this bill | Add another payment | Cancel.
+Never silent double-count.
+
+Action log, append-only, on the bill:
+created, scheduled, marked-due, marked-overdue, paid-recorded, paid-reminder-only,
+skipped, cancelled, manual-blocked-similar, linked-manual, user-corrected.
+Show that log whenever the user opens or corrects the bill.
+
+# 4 Overdue persists across months and years
+dueDate < today and status not paid/skipped/cancelled → overdue.
+Still not an expense.
+Show overdue on: original due day, Today, Bills banner “N overdue”, and an overdue list that remains when the user changes month or year.
+Do NOT paint the overdue chip on every blank day after the due date.
+User can correct from that list; corrections append to the log and do not erase history.
+
+# 5 Payday markers
+Schedule: Daily | Weekly | Every 2 weeks | Monthly.
+Or click a calendar day and check one of those boxes; that day is the anchor.
+Markers only. Not income.
+Also mark dates that already have a real income entry.
+Click marker → planning note + Add funds received. Save only on confirm.
+
+# 7 Box 1 — typical week, keep actual visible
+Headline: Typical week’s net
+= mean net of the last 12 completed weeks that have NO payday marker and NO income entry.
+If fewer than 2 such weeks, use median of all available weeks.
+Always show muted: “This week actual: In $X · Out $Y · Net $Z”.
+If this week has a payday or income, badge: “Payday week — not used in typical.”
+Do not change Box 2 month totals.
+
+# Statistics
+Ties: list every tied period. No data: “Not enough data yet.” No fake $0 facts.
+
+# Verify on the same 3-month sim
+$3,000 in / $2,500 out each month → $500 / month, $1,500 all-time.
+Box 4 daily ≈ $16.30.
+Past month Final $500.
+Payday week actual still shows the spike; typical week does not.
+Mark paid + record, then manual same bill → warning + log, not 2× money.
+Unpaid bill still listed overdue next month and next year.
+Do not restart :4174 until I say so.

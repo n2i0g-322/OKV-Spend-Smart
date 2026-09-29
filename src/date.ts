@@ -167,3 +167,29 @@ export function compareDates(a: string, b: string): number {
 export function inRange(ymd: string, start: string, end: string): boolean {
   return ymd >= start && ymd <= end;
 }
+
+/** Whole calendar days from a to b (b − a), DST-safe. */
+export function daysBetween(a: string, b: string): number {
+  const [y1, m1, d1] = a.split('-').map(Number);
+  const [y2, m2, d2] = b.split('-').map(Number);
+  return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86_400_000);
+}
+
+/** Calendar months overlapping [a, b] (inclusive, by YYYY-MM). */
+export function monthsOverlapping(a: string, b: string): number {
+  const [y1, m1] = a.split('-').map(Number);
+  const [y2, m2] = b.split('-').map(Number);
+  return (y2 - y1) * 12 + (m2 - m1) + 1;
+}
+
+/** Mon–Sun weeks overlapping [a, b] (inclusive). */
+export function weeksOverlapping(a: string, b: string): number {
+  return daysBetween(weekRangeMonSun(a).start, weekRangeMonSun(b).start) / 7 + 1;
+}
+
+/** Local date + time for an ISO timestamp, e.g. "2026-10-01, 9:00 a.m.". */
+export function formatLocalDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${toYMD(d)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}

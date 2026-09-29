@@ -1009,3 +1009,58 @@ body {
 .form-error { color: var(--red-text); font-size: 0.85rem; }
 .backup-pill.error { background: var(--red-bg); color: var(--red-text); }
 .line select.type-select { max-width: 96px; }
+
+/* ---- Fix pass 2: bill occurrence status, overdue list, duplicate guard, payday, Box 1/4 ---- */
+.status.scheduled { background: var(--surface-2); color: var(--text, inherit); }
+.status.cancelled { background: var(--surface-2); color: var(--muted); text-decoration: line-through; }
+.chip-status {
+  margin-left: 4px;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.chip-status.overdue { background: var(--red-bg); color: var(--red-text); }
+.chip-status.due { background: var(--warn-bg); color: var(--warn-text); }
+.chip-status.paid { background: var(--green-bg); color: var(--green-text); }
+.chip.bill .bill-chip-btn.status-overdue { font-weight: 600; }
+.chip.bill .bill-chip-btn.status-cancelled { text-decoration: line-through; opacity: 0.6; }
+.chip.payday.received { outline: 1px solid var(--green); }
+.overdue-panel { margin: 8px 0 12px; padding: 8px 12px; border-left: 4px solid var(--red); }
+.overdue-banner {
+  display: flex; gap: 8px; align-items: center; width: 100%;
+  background: none; border: 0; padding: 4px 0; cursor: pointer;
+  color: var(--red-text); font-weight: 700; font-size: 1rem; text-align: left;
+}
+.overdue-banner .chev { margin-left: auto; }
+.overdue-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
+.overdue-list li { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 0.85rem; }
+.due-chip.overdue { background: var(--red-bg); color: var(--red-text); border-color: var(--red); margin-left: 6px; }
+.bill-log { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
+.bill-log-head { display: flex; gap: 8px; align-items: baseline; }
+.bill-log-lines { margin: 6px 0 0; padding-left: 20px; font-size: 0.75rem; max-height: 220px; overflow: auto; }
+.bill-log-lines li { margin: 1px 0; }
+.bill-log-lines li.hl { font-weight: 600; }
+.occ-summary { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 4px 0 8px; }
+.markpaid { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 10px 0; }
+.markpaid legend { font-weight: 600; font-size: 0.85rem; padding: 0 4px; }
+.radio { display: block; font-size: 0.85rem; margin: 3px 0; }
+.field.inline { display: inline-flex; flex-direction: column; margin-right: 8px; }
+.dup-warning { border: 1px solid var(--red); background: var(--red-bg); color: var(--red-text); border-radius: 8px; padding: 8px 12px; margin: 10px 0; }
+.dup-dialog .occ-summary { padding: 8px; border-radius: 8px; background: var(--surface-2); }
+.linked-row { margin: 2px 0; }
+.badge.payday-badge {
+  display: inline-block; margin: 4px 0; padding: 2px 8px; border-radius: 999px;
+  background: var(--warn-bg); color: var(--warn-text); font-size: 0.75rem; font-weight: 600;
+}
+.week-actual { margin: 4px 0 0; }
+.muted-big { font-size: 1rem !important; color: var(--muted); }
+.pay-schedule { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin: 6px 0; }
+.pay-schedule select, .pay-schedule input { font-size: 0.8rem; }
+.payday-boxes { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; margin: 12px 0 0; }
+.payday-boxes legend { font-size: 0.8rem; font-weight: 600; padding: 0 4px; }
+.payday-boxes .radio { display: inline-block; margin-right: 12px; }
+.bill-link { white-space: nowrap; }

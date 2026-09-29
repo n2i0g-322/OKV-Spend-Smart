@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { AppState, Column, Entry, Tab } from '../types';
-import { formatMoney } from '../date';
+import { formatMoney, localToday } from '../date';
+import { occurrenceIndexByEntry } from '../bills';
+import { StatusBadge } from './BillStatus';
 import {
   columnTotalForDate,
   filterByDate,
@@ -19,6 +21,10 @@ interface Props {
   highlightEntryId: string | null;
   dueTodayCount: number;
   dueTodayLabel: string;
+  /** Overdue bills as of today (only passed when viewing today). */
+  overdueCount: number;
+  onAddEntry: (entry: Entry) => 'saved' | 'blocked';
+  onOpenOccurrence: (billId: string, dueDate: string) => void;
   onState: (s: AppState) => void;
   onQuickAdd: (amount: number, memo: string, date: string) => void;
   onOpenBillsDay: () => void;
@@ -34,6 +40,9 @@ export function DayView({
   highlightEntryId,
   dueTodayCount,
   dueTodayLabel,
+  overdueCount,
+  onAddEntry,
+  onOpenOccurrence,
   onState,
   onQuickAdd,
   onOpenBillsDay,
@@ -64,6 +73,7 @@ export function DayView({
   const dayIncome = incomeAmount(dayEntries);
   const daySpend = spentAmount(dayEntries);
   const dayNet = netSaved(dayEntries);
+  const occByEntry = useMemo(() => occurrenceIndexByEntry(state.bills, localToday()), [state.bills]);
 
   const setActive = (id: string) => onState({ ...state, activeTabId: id });
 
@@ -101,7 +111,6 @@ export function DayView({
   const commitLine = (columnId: string, raw: string, memo = '') => {
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0 || !activeTab) return;
-    pushUndo();
     const entry: Entry = {
       id: crypto.randomUUID(),
       date: selectedDate,
@@ -112,7 +121,7 @@ export function DayView({
       memo,
       source: 'grid',
     };
-    onState({ ...state, entries: [...state.entries, entry] });
+    onAddEntry(entry); // duplicate guard: may block and ask (bill-like expense)
     setDraftAmounts((d) => ({ ...d, [columnId]: '' }));
     setExpanded((e) => ({ ...e, [columnId]: true }));
   };
@@ -343,6 +352,11 @@ export function DayView({
             Due today · {dueTodayLabel}
           </button>
         )}
+        {overdueCount > 0 && (
+          <button type="button" className="due-chip overdue" onClick={onOpenBillsDay} data-testid="today-overdue">
+            ⚠ {overdueCount} overdue bill{overdueCount === 1 ? '' : 's'} (not money until paid)
+          </button>
+        )}
       </div>
 
       <div className="day-body">
@@ -454,6 +468,20 @@ export function DayView({
                             <option value="refund">refund</option>
                           </select>
                         )}
+                        {occByEntry.get(e.id) && (() => {
+                          const l = occByEntry.get(e.id)!;
+                          return (
+                            <button
+                              type="button"
+                              className="linkish small bill-link"
+                              title="Linked bill occurrence"
+                              onClick={() => onOpenOccurrence(l.occ.billId, l.occ.dueDate)}
+                            >
+                              🔗 {l.occ.bill.name} {l.occ.dueDate}
+                              {l.role === 'extra' ? ' (extra)' : ''} <StatusBadge status={l.occ.effective} />
+                            </button>
+                          );
+                        })()}
                         <button
                           type="button"
                           className="btn ghost sm"

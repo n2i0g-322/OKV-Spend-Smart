@@ -7,7 +7,7 @@ import type {
   Tab,
   ViewName,
 } from './types';
-import { isValidYMD, localToday, weekRangeMonSun } from './date';
+import { isValidYMD, localToday, monthBounds, weekRangeMonSun, yearBounds } from './date';
 import {
   KEY as STORAGE_KEY,
   downloadBlob,
@@ -22,7 +22,17 @@ import {
   saveAll,
   type UiPrefs,
 } from './storage';
-import { dueOn } from './bills';
+import {
+  addAnotherPayment,
+  findSimilarOccurrences,
+  linkManualEntry,
+  logBlockedSimilar,
+  occurrencesOn,
+  overdueList,
+  reconcileBills,
+  type SimilarMatch,
+} from './bills';
+import { DuplicateDialog, OccurrenceModal } from './components/BillStatus';
 import { ensureExtraFundsColumn, getOrCreateUncategorizedColumn, getUncategorizedTab } from './seed';
 import { applyRuleDestination, applyRulesToUncategorized, findMatchingRule } from './rules';
 import { UndoStack } from './undo';
@@ -106,6 +116,8 @@ export default function App() {
   const importRef = useRef<HTMLInputElement>(null);
   const [theme, setThemeState] = useState<ThemeState>(boot.theme);
   const [themeOpen, setThemeOpen] = useState(false);
+  const [occModal, setOccModal] = useState<{ billId: string; dueDate: string } | null>(null);
+  const [dupPrompt, setDupPrompt] = useState<{ entry: Entry; matches: SimilarMatch[] } | null>(null);
 
   // ---- Persistence: one blob, written synchronously after every committed action. ----
   /** Latest committed values (refs so a write never uses a stale render's state). */
@@ -180,6 +192,35 @@ export default function App() {
       persist();
     },
     [persist],
+  );
+
+  // Time-driven bill log lines (marked-due / marked-overdue), idempotent; re-run when the local day changes.
+  const today = localToday();
+  useEffect(() => {
+    const cur = live.current.state;
+    const next = reconcileBills(cur, today);
+    if (next !== cur) update(next);
+  }, [today, update, state.bills]);
+
+  /**
+   * Add a manual entry through the duplicate guard. `prepared` is the state the entry
+   * should be added to (may include a new column / rule side effects).
+   * Similar to a bill occurrence → block, log on the bill, and ask the user.
+   */
+  const commitEntry = useCallback(
+    (prepared: AppState, entry: Entry): 'saved' | 'blocked' => {
+      undoRef.current.push(live.current.state);
+      setCanUndo(true);
+      const matches = findSimilarOccurrences(prepared, entry, localToday());
+      if (!matches.length) {
+        update({ ...prepared, entries: [...prepared.entries, entry] });
+        return 'saved';
+      }
+      update(logBlockedSimilar(prepared, matches[0], entry));
+      setDupPrompt({ entry, matches });
+      return 'blocked';
+    },
+    [update],
   );
 
   const setTheme = useCallback(
@@ -266,7 +307,6 @@ export default function App() {
 
   const handleQuickAdd = (amount: number, memo: string, date: string) => {
     if (!isValidYMD(date) || !(amount > 0)) return;
-    pushUndo();
     let s = state;
     const rule = findMatchingRule(s.rules, memo, 'expense');
     const dest = applyRuleDestination(s, rule, 'expense');
@@ -281,7 +321,7 @@ export default function App() {
       memo,
       source: 'quick-add',
     };
-    update({ ...s, entries: [...s.entries, entry] });
+    if (commitEntry(s, entry) === 'blocked') return;
     if (dest.ruled && dest.label) {
       showToast(`Filed under ${dest.label}`);
     } else if (!rule) {
@@ -377,9 +417,21 @@ export default function App() {
   };
 
   const dueToday = useMemo(
-    () => state.bills.filter((b) => dueOn(b, selectedDate)),
-    [state.bills, selectedDate],
+    () =>
+      occurrencesOn(state.bills, selectedDate, today).filter(
+        (o) => o.effective !== 'paid' && o.effective !== 'skipped' && o.effective !== 'cancelled',
+      ),
+    [state.bills, selectedDate, today],
   );
+  const overdueNow = useMemo(() => overdueList(state.bills, today), [state.bills, today]);
+  const viewRangeEnd =
+    view === 'week'
+      ? weekRangeMonSun(selectedDate).end
+      : view === 'month'
+        ? monthBounds(selectedDate).end
+        : view === 'year'
+          ? yearBounds(selectedDate).end
+          : selectedDate;
 
   const doExport = (kind: 'json' | 'csv') => {
     const stamped = markExport(state);
@@ -445,14 +497,12 @@ export default function App() {
         <SummaryCards
           state={state}
           selectedDate={selectedDate}
-          box1Label={
-            view === 'week'
-              ? "Selected week's money saved"
-              : view === 'year'
-                ? "This week's money saved"
-                : undefined
-          }
+          rangeEnd={viewRangeEnd}
           onAddFunds={() => openAddFunds()}
+          onPayScheduleChange={(ps) => {
+            pushUndo();
+            update({ ...state, paySchedule: ps });
+          }}
           onExpectedChange={(frequency: ExpectedFrequency, amount: number) => {
             // expected income is planning only — no undo needed for every keystroke, but keep light
             const amt = Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : 0;
@@ -467,7 +517,10 @@ export default function App() {
           selectedDate={selectedDate}
           highlightEntryId={highlightEntryId}
           dueTodayCount={dueToday.length}
-          dueTodayLabel={dueToday.map((b) => b.name).join(', ') || 'bills'}
+          dueTodayLabel={dueToday.map((o) => `${o.bill.name} (${o.effective})`).join(', ') || 'bills'}
+          overdueCount={selectedDate === today ? overdueNow.length : 0}
+          onAddEntry={(entry) => commitEntry(state, entry)}
+          onOpenOccurrence={(billId, dueDate) => setOccModal({ billId, dueDate })}
           onState={update}
           onQuickAdd={handleQuickAdd}
           onOpenBillsDay={() => {
@@ -525,6 +578,8 @@ export default function App() {
           }}
           onToast={(m) => showToast(m)}
           pushUndo={pushUndo}
+          onAddEntry={commitEntry}
+          onOpenOccurrence={(billId, dueDate) => setOccModal({ billId, dueDate })}
         />
       )}
       {view === 'statistics' && (
@@ -654,6 +709,52 @@ export default function App() {
             </button>
           </div>
         </Modal>
+      )}
+      {occModal && (
+        <OccurrenceModal
+          state={state}
+          billId={occModal.billId}
+          dueDate={occModal.dueDate}
+          onClose={() => setOccModal(null)}
+          onCommit={(next) => {
+            pushUndo();
+            update(next);
+          }}
+          onOpenEntry={(date, entryId) => {
+            setOccModal(null);
+            setSelectedDate(date);
+            const e = state.entries.find((x) => x.id === entryId);
+            if (e && e.tabId !== state.activeTabId) update({ ...state, activeTabId: e.tabId });
+            setHighlightEntryId(entryId);
+            window.setTimeout(() => setHighlightEntryId(null), 3000);
+            setView('day');
+          }}
+        />
+      )}
+      {dupPrompt && (
+        <DuplicateDialog
+          state={state}
+          entry={dupPrompt.entry}
+          matches={dupPrompt.matches}
+          onCancel={() => setDupPrompt(null)}
+          onOpenExisting={(m) => {
+            setDupPrompt(null);
+            setOccModal({ billId: m.occ.billId, dueDate: m.occ.dueDate });
+          }}
+          onLink={(m) => {
+            const next = linkManualEntry(live.current.state, m, dupPrompt.entry);
+            if (next) {
+              update(next);
+              showToast(`Linked to ${m.occ.bill.name} (due ${m.occ.dueDate}) — counted once.`);
+            }
+            setDupPrompt(null);
+          }}
+          onAddAnother={(m) => {
+            update(addAnotherPayment(live.current.state, m, dupPrompt.entry));
+            showToast(`Saved as an additional ${m.occ.bill.name} payment (your override).`);
+            setDupPrompt(null);
+          }}
+        />
       )}
       {themeOpen && (
         <ThemePanel

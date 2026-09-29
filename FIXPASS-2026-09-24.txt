@@ -1,0 +1,41 @@
+OKV Spend Smart — fix pass. Do not rename the app. Keep CAD, local dates, Monday–Sunday weeks.
+
+# Bug: data changes or disappears on a normal refresh
+This is a persistence bug, not a feature.
+
+Required save rules:
+1. There is one stored blob in localStorage key okvSpendSmart.
+2. It must include: tabs, columns, entries, bills, Box 3 expected income + frequency, budgets, rules, theme, selected view/date, lastBackupAt.
+3. Write that blob synchronously after EVERY committed action (add/edit/delete entry, add bill, add funds, mark paid, tab/column change, Box 3 change, theme). Do not wait for beforeunload.
+4. Also flush a snapshot every 60 seconds if state is dirty.
+5. On boot: READ storage first. If a blob exists, use it. Seed Bills/Food/… only when storage is empty.
+6. Do not save until hydration from localStorage has finished (hydrated flag). Saving empty seed over real data is the usual refresh bug.
+7. After a successful write, UI badge = “Saved just now” and lastBackupAt = now. “Never backed up” is wrong after the user has added anything.
+
+If inputs in an open modal vanish on refresh, that is OK. If a saved bill, expense, expected amount, or tab color resets, that is a bug — fix it.
+
+# Bills calendar click
+Clicking a day cell (empty area) opens an action menu for that date:
+
+- Add bill          → red button. Creates a scheduled bill (reminder). Does NOT log money.
+- Add funds received → green button. Existing Add-funds modal, date prefilled to that cell. Logs income only on confirm.
+- Then one button for EVERY user tab already created, using that tab’s saved color.
+  Example: Add Gas (orange), Add Food (its color), Add Entertainment, Add Work, Add Bills, Add Income.
+
+Choosing a tab opens: column dropdown for that tab, amount, memo, Save.
+On Save create a real entry { date: that cell, tabId, columnId, amount, type income if Income tab else expense, source: "bills-overview" }.
+Persist immediately.
+Paint a chip on that calendar cell in the tab’s existing color (Gas stays orange).
+The same entry must appear on Day view under that tab/column and in Box 1–4 totals.
+
+# Bills overview content
+The calendar is a full activity board for the month, not only due dates.
+Each day cell shows, color-coded with already-saved tab/bill colors:
+- Payday marker (green, marker only)
+- Scheduled bills (bill color or red)
+- Every actual entry that day (tab color + name + amount)
+
+Bills day view lists the same items with full detail: memo, payee, method, URL, status, amount.
+Click a chip → day detail focused on that item.
+
+Payday remains a marker only. Add bill remains a reminder only unless the user later logs a payment.

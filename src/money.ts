@@ -1,6 +1,11 @@
-import type { Entry, ExpectedIncome } from './types';
+import type { Entry, ExpectedIncome, PaySchedule } from './types';
 import {
+  addDays,
+  daysBetween,
   daysInMonth,
+  localToday,
+  monthsOverlapping,
+  weeksOverlapping,
   eachDay,
   getYear,
   inRange,
@@ -127,6 +132,259 @@ export function averages(entries: Entry[]): {
   };
 }
 
+/** Median of a list of cents values (returns cents). */
+function medianCents(list: number[]): number {
+  const a = [...list].sort((x, y) => x - y);
+  const n = a.length;
+  if (!n) return 0;
+  return n % 2 ? a[(n - 1) / 2] : Math.round((a[n / 2 - 1] + a[n / 2]) / 2);
+}
+
+function netCents(entries: Entry[]): number {
+  let c = 0;
+  for (const e of entries) {
+    if (e.type === 'income' || e.type === 'refund') c += toCents(e.amount);
+    else if (e.type === 'expense') c -= toCents(e.amount);
+  }
+  return c;
+}
+
+export interface CalendarAverages {
+  hasData: boolean;
+  allTime: number;
+  spanStart: string;
+  spanEnd: string;
+  calendarDays: number;
+  calendarWeeks: number;
+  calendarMonths: number;
+  avgDaily: number;
+  avgWeekly: number;
+  avgMonthly: number;
+  /** Old figure: net ÷ days that have entries (shown muted). */
+  daysWithData: number;
+  perDayWithEntries: number;
+  /** true when spanEnd is the end of a past range rather than today. */
+  pastRange: boolean;
+}
+
+/**
+ * Box 4 — calendar averages.
+ * spanStart = first entry date; spanEnd = today, or the last day of a past range
+ * (when `rangeEnd` is before today). If entries exist after today and the range is
+ * current, spanEnd extends to the last entry so all-time really is all-time.
+ * Empty days/weeks/months inside the span count.
+ */
+export function calendarAverages(
+  entries: Entry[],
+  rangeEnd?: string,
+  today: string = localToday(),
+): CalendarAverages {
+  const dated = entries.filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e.date));
+  const pastRange = !!rangeEnd && rangeEnd < today;
+  let spanEnd = pastRange ? rangeEnd! : today;
+  if (!pastRange) for (const e of dated) if (e.date > spanEnd) spanEnd = e.date;
+  const inSpan = dated.filter((e) => e.date <= spanEnd);
+  const spanStart = inSpan.reduce((m, e) => (e.date < m ? e.date : m), '9999-12-31');
+  const empty: CalendarAverages = {
+    hasData: false, allTime: 0, spanStart: '', spanEnd, calendarDays: 0, calendarWeeks: 0, calendarMonths: 0,
+    avgDaily: 0, avgWeekly: 0, avgMonthly: 0, daysWithData: 0, perDayWithEntries: 0, pastRange,
+  };
+  if (!inSpan.length) return empty;
+  const net = netCents(inSpan);
+  const days = daysBetween(spanStart, spanEnd) + 1;
+  const weeks = weeksOverlapping(spanStart, spanEnd);
+  const months = monthsOverlapping(spanStart, spanEnd);
+  const dwd = new Set(inSpan.map((e) => e.date)).size;
+  const r = (c: number, n: number) => roundCents(c / 100 / n);
+  return {
+    hasData: true,
+    allTime: net === 0 ? 0 : net / 100,
+    spanStart,
+    spanEnd,
+    calendarDays: days,
+    calendarWeeks: weeks,
+    calendarMonths: months,
+    avgDaily: r(net, days),
+    avgWeekly: r(net, weeks),
+    avgMonthly: r(net, months),
+    daysWithData: dwd,
+    perDayWithEntries: r(net, dwd),
+    pastRange,
+  };
+}
+
+export type MonthEnd =
+  | { kind: 'final'; net: number; monthStart: string; monthEnd: string; hasEntries: boolean }
+  | { kind: 'projected'; mtd: number; daysElapsed: number; daysInMonth: number; remaining: number; pace: number; projected: number; monthStart: string; monthEnd: string }
+  | { kind: 'future'; monthStart: string; monthEnd: string }
+  | { kind: 'nodata'; monthStart: string; monthEnd: string };
+
+/**
+ * Month-end net for the month containing `ymd`.
+ * Past month → actual final net. Current month → MTD + remaining days × (MTD ÷ days 1st..today).
+ */
+export function monthEndNet(entries: Entry[], ymd: string, today: string = localToday()): MonthEnd {
+  const { start, end } = monthBounds(ymd);
+  if (end < today) {
+    const list = filterByRange(entries, start, end);
+    return { kind: 'final', net: netSaved(list), monthStart: start, monthEnd: end, hasEntries: list.length > 0 };
+  }
+  if (start > today) return { kind: 'future', monthStart: start, monthEnd: end };
+  const mtdList = filterByRange(entries, start, today);
+  if (!mtdList.length) return { kind: 'nodata', monthStart: start, monthEnd: end };
+  const mtdC = netCents(mtdList);
+  const elapsed = daysBetween(start, today) + 1;
+  const dim = daysInMonth(ymd);
+  const remaining = dim - elapsed;
+  const paceC = mtdC / elapsed;
+  return {
+    kind: 'projected',
+    mtd: mtdC / 100 || 0,
+    daysElapsed: elapsed,
+    daysInMonth: dim,
+    remaining,
+    pace: roundCents(paceC / 100),
+    projected: roundCents((mtdC + remaining * paceC) / 100),
+    monthStart: start,
+    monthEnd: end,
+  };
+}
+
+/** Scheduled payday marker dates in [start, end] (planning only). Periodic in both directions from the anchor. */
+export function scheduledPaydays(schedule: PaySchedule | null | undefined, start: string, end: string): string[] {
+  if (!schedule || !/^\d{4}-\d{2}-\d{2}$/.test(schedule.anchor) || !start || !end || start > end) return [];
+  const out: string[] = [];
+  const { frequency, anchor } = schedule;
+  if (frequency === 'daily') return eachDay(start, end);
+  if (frequency === 'weekly' || frequency === 'biweekly') {
+    const step = frequency === 'weekly' ? 7 : 14;
+    const off = ((daysBetween(anchor, start) % step) + step) % step;
+    for (let d = off === 0 ? start : addDays(start, step - off); d <= end; d = addDays(d, step)) out.push(d);
+    return out;
+  }
+  // monthly: anchor day-of-month, clamped to month length
+  const aDay = parseLocalDate(anchor).getDate();
+  const s = parseLocalDate(start);
+  for (let m = 0; ; m++) {
+    const first = new Date(s.getFullYear(), s.getMonth() + m, 1);
+    if (toYMD(first) > end) break;
+    const dim = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+    const d = toYMD(new Date(first.getFullYear(), first.getMonth(), Math.min(aDay, dim)));
+    if (d >= start && d <= end) out.push(d);
+  }
+  return out;
+}
+
+export interface PaydayMarker {
+  date: string;
+  scheduled: boolean;
+  income: boolean;
+}
+
+/** Payday markers = scheduled paydays ∪ dates that already have a real income entry. Markers only. */
+export function paydayMarkers(
+  schedule: PaySchedule | null | undefined,
+  start: string,
+  end: string,
+  incomeDates: string[],
+): PaydayMarker[] {
+  const m = new Map<string, PaydayMarker>();
+  for (const d of scheduledPaydays(schedule, start, end)) m.set(d, { date: d, scheduled: true, income: false });
+  for (const d of incomeDates) {
+    if (!inRange(d, start, end)) continue;
+    const cur = m.get(d);
+    m.set(d, { date: d, scheduled: cur?.scheduled ?? false, income: true });
+  }
+  return [...m.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+/** @deprecated compatibility wrapper: marker dates only. */
+export function paydayMarkersInRange(
+  schedule: PaySchedule | null | undefined,
+  start: string,
+  end: string,
+  incomeDates: string[],
+): string[] {
+  return paydayMarkers(schedule, start, end, incomeDates).map((x) => x.date);
+}
+
+export interface WeekActual {
+  start: string;
+  end: string;
+  income: number;
+  out: number;
+  net: number;
+  hasIncome: boolean;
+  hasPaydayMarker: boolean;
+}
+
+export function weekActual(entries: Entry[], schedule: PaySchedule | null | undefined, ymd: string): WeekActual {
+  const w = weekRangeMonSun(ymd);
+  const list = filterByRange(entries, w.start, w.end);
+  const inc = sumByType(list, 'income');
+  const out = roundCents(sumByType(list, 'expense') - sumByType(list, 'refund'));
+  return {
+    start: w.start,
+    end: w.end,
+    income: inc,
+    out,
+    net: netSaved(list),
+    hasIncome: list.some((e) => e.type === 'income'),
+    hasPaydayMarker: scheduledPaydays(schedule, w.start, w.end).length > 0,
+  };
+}
+
+export interface TypicalWeek {
+  hasData: boolean;
+  value: number;
+  method: 'mean' | 'median' | 'none';
+  weeksUsed: WeekActual[];
+  completedWeeks: number;
+  thisWeek: WeekActual;
+  thisWeekIsPayday: boolean;
+}
+
+/**
+ * Box 1 — typical week's net.
+ * Mean net of the last 12 completed Mon–Sun weeks (on/after the first entry's week,
+ * before the selected week and before today) that have NO payday marker and NO income entry.
+ * If fewer than 2 such weeks: median of all available completed weeks.
+ */
+export function typicalWeek(
+  entries: Entry[],
+  schedule: PaySchedule | null | undefined,
+  selectedDate: string,
+  today: string = localToday(),
+): TypicalWeek {
+  const thisWeek = weekActual(entries, schedule, selectedDate);
+  const thisWeekIsPayday = thisWeek.hasIncome || thisWeek.hasPaydayMarker;
+  const dated = entries.filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e.date));
+  const first = dated.reduce((m, e) => (e.date < m ? e.date : m), '9999-12-31');
+  const base = { thisWeek, thisWeekIsPayday };
+  if (!dated.length) return { ...base, hasData: false, value: 0, method: 'none', weeksUsed: [], completedWeeks: 0 };
+  const cutoff = thisWeek.start < today ? thisWeek.start : today; // completed = ends before this
+  const firstWeek = weekRangeMonSun(first).start;
+  const completed: WeekActual[] = [];
+  for (let w = weekRangeMonSun(addDays(cutoff, -1)).start; w >= firstWeek; w = addDays(w, -7)) {
+    if (addDays(w, 6) >= cutoff) continue;
+    completed.push(weekActual(entries, schedule, w));
+  }
+  const clean = completed.filter((w) => !w.hasIncome && !w.hasPaydayMarker).slice(0, 12);
+  if (clean.length >= 2) {
+    const c = clean.reduce((s, w) => s + toCents(w.net), 0);
+    return { ...base, hasData: true, value: roundCents(c / clean.length / 100), method: 'mean', weeksUsed: clean, completedWeeks: completed.length };
+  }
+  if (!completed.length) return { ...base, hasData: false, value: 0, method: 'none', weeksUsed: [], completedWeeks: 0 };
+  return {
+    ...base,
+    hasData: true,
+    value: medianCents(completed.map((w) => toCents(w.net))) / 100,
+    method: 'median',
+    weeksUsed: completed,
+    completedWeeks: completed.length,
+  };
+}
+
 export function expectedForMonth(
   expected: ExpectedIncome,
   ymdInMonth: string,
@@ -162,57 +420,6 @@ export function impliedMonthly(
   ymdInMonth: string,
 ): number {
   return expectedForMonth(expected, ymdInMonth);
-}
-
-/**
- * Payday marker dates implied by expected frequency within a range, plus dates
- * that already have actual income. Markers are planning only.
- *
- * - No expected markers when the expected amount is 0 (nothing planned).
- * - Monthly: anchored to the day-of-month of the most recent income entry
- *   (clamped to short months), else the 1st.
- * - Yearly: anchored to the month/day of the most recent income entry, else Jan 1.
- * - Daily: every day.
- */
-export function paydayMarkersInRange(
-  expected: ExpectedIncome,
-  start: string,
-  end: string,
-  incomeDates: string[],
-): string[] {
-  const markers = new Set<string>(incomeDates.filter((d) => inRange(d, start, end)));
-  if (!(expected.amount > 0) || !start || !end || start > end) return [...markers].sort();
-  const latestIncome = incomeDates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().pop();
-  const days = eachDay(start, end);
-  if (expected.frequency === 'daily') {
-    for (const d of days) markers.add(d);
-  } else if (expected.frequency === 'monthly') {
-    const anchorDay = latestIncome ? parseLocalDate(latestIncome).getDate() : 1;
-    const seen = new Set<string>();
-    for (const d of days) {
-      const mk = d.slice(0, 7);
-      if (seen.has(mk)) continue;
-      seen.add(mk);
-      const dim = daysInMonth(d);
-      const day = Math.min(anchorDay, dim);
-      const m = `${mk}-${day < 10 ? `0${day}` : day}`;
-      if (inRange(m, start, end)) markers.add(m);
-    }
-  } else {
-    const anchor = latestIncome ? parseLocalDate(latestIncome) : null;
-    const am = anchor ? anchor.getMonth() : 0;
-    const ad = anchor ? anchor.getDate() : 1;
-    const seen = new Set<number>();
-    for (const d of days) {
-      const y = getYear(d);
-      if (seen.has(y)) continue;
-      seen.add(y);
-      const dim = new Date(y, am + 1, 0).getDate();
-      const m = toYMD(new Date(y, am, Math.min(ad, dim)));
-      if (inRange(m, start, end)) markers.add(m);
-    }
-  }
-  return [...markers].sort();
 }
 
 export function topExpenseTabs(

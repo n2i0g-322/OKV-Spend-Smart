@@ -1,14 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
-import type { AppState, ExpectedFrequency } from '../types';
+import type { AppState, ExpectedFrequency, PayFrequency, PaySchedule } from '../types';
 import {
+  addDays,
   formatMoney,
+  formatShortDate,
   formatWeekLabel,
+  isValidYMD,
+  localToday,
   weekRangeMonSun,
   monthBounds,
 } from '../date';
 import {
-  averages,
+  calendarAverages,
   expectedForMonth,
+  scheduledPaydays,
+  typicalWeek,
   filterByRange,
   impliedDaily,
   impliedMonthly,
@@ -21,28 +27,47 @@ import {
 interface Props {
   state: AppState;
   selectedDate: string;
-  box1Label?: string;
+  /** Last day of the viewed range (day/week/month/year) — Box 4 span ends here if it is in the past. */
+  rangeEnd?: string;
   onAddFunds: () => void;
   onExpectedChange: (frequency: ExpectedFrequency, amount: number) => void;
+  onPayScheduleChange?: (ps: PaySchedule | null) => void;
 }
+
+const PAY_LABEL: Record<PayFrequency, string> = {
+  daily: 'Daily',
+  weekly: 'Weekly',
+  biweekly: 'Every 2 weeks',
+  monthly: 'Monthly',
+};
+
+const shortRange = (a: string, b: string) =>
+  `${formatShortDate(a)}${a.slice(0, 4) !== b.slice(0, 4) ? `, ${a.slice(0, 4)}` : ''} – ${formatShortDate(b)}, ${b.slice(0, 4)}`;
 
 export function SummaryCards({
   state,
   selectedDate,
-  box1Label,
+  rangeEnd,
   onAddFunds,
   onExpectedChange,
+  onPayScheduleChange,
 }: Props) {
+  const today = localToday();
   const week = weekRangeMonSun(selectedDate);
   const month = monthBounds(selectedDate);
-  const weekNet = netSaved(filterByRange(state.entries, week.start, week.end));
+  const typical = typicalWeek(state.entries, state.paySchedule, selectedDate, today);
+  const tw = typical.thisWeek;
+  const isCurrentWeek = today >= week.start && today <= week.end;
+  const nextPay = state.paySchedule
+    ? scheduledPaydays(state.paySchedule, today, addDays(today, 62))[0]
+    : undefined;
   const monthNet = netSaved(filterByRange(state.entries, month.start, month.end));
   const monthIncome = incomeAmount(
     filterByRange(state.entries, month.start, month.end),
   );
   const expectedMonth = expectedForMonth(state.expectedIncome, selectedDate);
   const diff = roundCents(monthIncome - expectedMonth);
-  const avgs = averages(state.entries);
+  const avgs = calendarAverages(state.entries, rangeEnd ?? selectedDate, today);
   const freq = state.expectedIncome.frequency;
 
   // Local draft so typing "12." or clearing the field doesn't fight the saved number.
@@ -55,12 +80,32 @@ export function SummaryCards({
 
   return (
     <div className="summary-cards">
-      <article className="card tint-green">
+      <article className="card tint-green" data-testid="box1">
         <div className="card-icon" aria-hidden>
           🐷
         </div>
-        <h3>{box1Label ?? "This week's money saved"}</h3>
-        <p className="big">{formatMoney(weekNet)}</p>
+        <h3>Typical week’s net</h3>
+        {typical.hasData ? (
+          <>
+            <p className="big">{formatMoney(typical.value)}</p>
+            <p className="sub">
+              {typical.method === 'mean'
+                ? `Mean of the last ${typical.weeksUsed.length} completed week${typical.weeksUsed.length === 1 ? '' : 's'} with no payday or income`
+                : `Median of ${typical.weeksUsed.length} completed week${typical.weeksUsed.length === 1 ? '' : 's'} (fewer than 2 weeks without payday)`}
+            </p>
+          </>
+        ) : (
+          <p className="big muted-big">Not enough data yet.</p>
+        )}
+        <p className="muted small week-actual" data-testid="week-actual">
+          {isCurrentWeek ? 'This week actual' : `Selected week actual ${formatWeekLabel(week.start, week.end)}`}: In{' '}
+          {formatMoney(tw.income)} · Out {formatMoney(tw.out)} · Net {formatMoney(tw.net)}
+        </p>
+        {typical.thisWeekIsPayday && (
+          <p className="badge payday-badge" data-testid="payday-badge">
+            Payday week — not used in typical.
+          </p>
+        )}
         <p className="sub">{formatWeekLabel(week.start, week.end)}</p>
         <button type="button" className="linkish" onClick={onAddFunds}>
           + Add funds
@@ -127,35 +172,78 @@ export function SummaryCards({
             {diff === 0 ? 'On plan' : `${diff > 0 ? 'Ahead' : 'Behind'} ${formatMoney(Math.abs(diff))}`}
           </span>
         </p>
-        <p className="muted tiny">Planning only — never enters net saved.</p>
+        <div className="pay-schedule" data-testid="pay-schedule">
+          <label>
+            <span className="small">Payday markers</span>{' '}
+            <select
+              value={state.paySchedule?.frequency ?? ''}
+              onChange={(e) => {
+                const f = e.target.value as PayFrequency | '';
+                if (!onPayScheduleChange) return;
+                if (!f) onPayScheduleChange(null);
+                else onPayScheduleChange({ frequency: f, anchor: state.paySchedule?.anchor ?? today });
+              }}
+            >
+              <option value="">None (income dates only)</option>
+              {(Object.keys(PAY_LABEL) as PayFrequency[]).map((f) => (
+                <option key={f} value={f}>
+                  {PAY_LABEL[f]}
+                </option>
+              ))}
+            </select>
+          </label>
+          {state.paySchedule && (
+            <label>
+              <span className="small">from</span>{' '}
+              <input
+                type="date"
+                value={state.paySchedule.anchor}
+                onChange={(e) => {
+                  const d = e.target.value;
+                  if (isValidYMD(d) && onPayScheduleChange) onPayScheduleChange({ ...state.paySchedule!, anchor: d });
+                }}
+              />
+            </label>
+          )}
+          {nextPay && <span className="muted tiny">Next payday marker: {formatShortDate(nextPay)}</span>}
+        </div>
+        <p className="muted tiny">Planning only — expected pay and payday markers never enter net saved.</p>
         <button type="button" className="btn primary sm" onClick={onAddFunds}>
           + Add funds received
         </button>
       </article>
 
-      <article className="card tint-red">
+      <article className="card tint-red" data-testid="box4">
         <div className="card-icon" aria-hidden>
           🏦
         </div>
-        <h3>Saved so far</h3>
+        <h3>{avgs.pastRange ? `Saved through ${formatShortDate(avgs.spanEnd)}` : 'Saved so far'}</h3>
         <p className="big">{formatMoney(avgs.allTime)}</p>
-        <p className="sub">All time</p>
-        {avgs.daysWithData === 0 ? (
-          <p className="muted">$0.00 — No data yet.</p>
+        {!avgs.hasData ? (
+          <p className="muted">Not enough data yet.</p>
         ) : (
-          <ul className="avg-list">
-            <li>
-              Avg monthly <strong>{formatMoney(avgs.avgMonthly)}</strong>
-            </li>
-            <li>
-              Avg weekly <strong>{formatMoney(avgs.avgWeekly)}</strong>
-            </li>
-            <li>
-              Avg daily <strong>{formatMoney(avgs.avgDaily)}</strong>
-            </li>
-          </ul>
+          <>
+            <p className="sub">All time · {shortRange(avgs.spanStart, avgs.spanEnd)}</p>
+            <ul className="avg-list">
+              <li>
+                Avg daily <strong>{formatMoney(avgs.avgDaily)}</strong>{' '}
+                <span className="muted small">÷ {avgs.calendarDays} calendar day{avgs.calendarDays === 1 ? '' : 's'}</span>
+              </li>
+              <li>
+                Avg weekly <strong>{formatMoney(avgs.avgWeekly)}</strong>{' '}
+                <span className="muted small">÷ {avgs.calendarWeeks} Mon–Sun week{avgs.calendarWeeks === 1 ? '' : 's'}</span>
+              </li>
+              <li>
+                Avg monthly <strong>{formatMoney(avgs.avgMonthly)}</strong>{' '}
+                <span className="muted small">÷ {avgs.calendarMonths} calendar month{avgs.calendarMonths === 1 ? '' : 's'}</span>
+              </li>
+            </ul>
+            <p className="muted tiny">
+              Empty days/weeks count. Old figure: {formatMoney(avgs.perDayWithEntries)} per day with entries (
+              {avgs.daysWithData} days).
+            </p>
+          </>
         )}
-        <p className="muted tiny">Averages use days/weeks/months with data.</p>
       </article>
     </div>
   );

@@ -72,13 +72,14 @@ export function createSeedState(): AppState {
   ];
 
   return {
-    version: 1,
+    version: 2,
     tabs,
     columns,
     entries: [],
     bills: [],
     rules: [],
     expectedIncome: { frequency: 'monthly', amount: 0 },
+    paySchedule: null,
     charts,
     lastBackupAt: null,
     hasSeenWelcome: false,
