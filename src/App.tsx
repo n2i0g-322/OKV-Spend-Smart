@@ -10,16 +10,25 @@ import type {
 import { isValidYMD, localToday, monthBounds, weekRangeMonSun, yearBounds } from './date';
 import {
   KEY as STORAGE_KEY,
+  DELETED_BACKUP_PREFIX,
+  RESET_BACKUP_PREFIX,
   downloadBlob,
+  exportAllJSON,
   exportCSV,
   exportJSON,
   loadAll,
+  makeAccount,
   markExport,
   mergeStates,
+  newAccountId,
+  nextAccountName,
   parseBlob,
   parseImport,
+  parseImportAccounts,
   parseImportTheme,
-  saveAll,
+  saveBlob,
+  writeBackupCopy,
+  type AccountRecord,
   type UiPrefs,
 } from './storage';
 import {
@@ -33,7 +42,11 @@ import {
   type SimilarMatch,
 } from './bills';
 import { DuplicateDialog, OccurrenceModal } from './components/BillStatus';
-import { ensureExtraFundsColumn, getOrCreateUncategorizedColumn, getUncategorizedTab } from './seed';
+import { createSeedState, ensureExtraFundsColumn, getOrCreateUncategorizedColumn, getUncategorizedTab } from './seed';
+import { needsSetup } from './setup';
+import { SetupWizard } from './components/SetupWizard';
+import { AccountsView } from './components/AccountsView';
+import { DeleteAccountFlow, RenameAccount, ResetAccountConfirm } from './components/AccountDialogs';
 import { applyRuleDestination, applyRulesToUncategorized, findMatchingRule } from './rules';
 import { UndoStack } from './undo';
 import { Header } from './components/Header';
@@ -79,6 +92,19 @@ function isReloadNavigation(): boolean {
 
 const FLUSH_MS = 60_000;
 
+type Live = {
+  state: AppState;
+  theme: ThemeState;
+  ui: UiPrefs;
+  accounts: AccountRecord[];
+  activeId: string;
+};
+
+/** Account list with the active account's live data/ui folded in. */
+function mergeActive(l: Live): AccountRecord[] {
+  return l.accounts.map((a) => (a.id === l.activeId ? { ...a, data: l.state, ui: l.ui } : a));
+}
+
 export default function App() {
   // ---- Boot: READ storage first (synchronously, before first render). ----
   const [boot] = useState(() => {
@@ -89,6 +115,12 @@ export default function App() {
     return { ...r, ui };
   });
   const [state, setState] = useState<AppState>(boot.state);
+  const [accounts, setAccounts] = useState<AccountRecord[]>(boot.accounts);
+  const [activeId, setActiveId] = useState<string>(boot.activeAccountId);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [acctDialog, setAcctDialog] = useState<
+    { kind: 'reset' | 'delete' | 'rename'; id: string } | null
+  >(null);
   const [view, setViewState] = useState<ViewName>(boot.ui.view);
   const [selectedDate, setSelectedDateState] = useState(boot.ui.selectedDate);
   const [billsSub, setBillsSub] = useState<BillsSub>('month');
@@ -121,10 +153,12 @@ export default function App() {
 
   // ---- Persistence: one blob, written synchronously after every committed action. ----
   /** Latest committed values (refs so a write never uses a stale render's state). */
-  const live = useRef<{ state: AppState; theme: ThemeState; ui: UiPrefs }>({
+  const live = useRef<Live>({
     state: boot.state,
     theme: boot.theme,
     ui: boot.ui,
+    accounts: boot.accounts,
+    activeId: boot.activeAccountId,
   });
   /** Never write until hydration from localStorage has finished. */
   const hydrated = useRef(false);
@@ -134,7 +168,13 @@ export default function App() {
     dirty.current = true;
     if (!hydrated.current) return;
     try {
-      const at = saveAll(live.current.state, live.current.theme, live.current.ui);
+      const { savedAt: at, accounts: written } = saveBlob(
+        mergeActive(live.current),
+        live.current.activeId,
+        live.current.theme,
+      );
+      live.current = { ...live.current, accounts: written };
+      setAccounts(written);
       dirty.current = false;
       setLastSavedAt(at);
       setNow(Date.now());
@@ -166,7 +206,24 @@ export default function App() {
       if (e.key !== STORAGE_KEY || !e.newValue) return;
       const other = parseBlob(e.newValue);
       if (!other) return;
-      live.current = { ...live.current, state: other.state, theme: other.theme };
+      if (other.source !== 'blob') {
+        // An older single-account writer: treat it as the active account's data.
+        live.current = { ...live.current, state: other.state, theme: other.theme };
+      } else {
+        if (other.activeAccountId !== live.current.activeId) {
+          undoRef.current.clear();
+          setCanUndo(false);
+        }
+        live.current = {
+          ...live.current,
+          accounts: other.accounts,
+          activeId: other.activeAccountId,
+          state: other.state,
+          theme: other.theme,
+        };
+        setAccounts(other.accounts);
+        setActiveId(other.activeAccountId);
+      }
       setState(other.state);
       setThemeState(other.theme);
       applyTheme(other.theme);
@@ -250,6 +307,127 @@ export default function App() {
     },
     [persist],
   );
+
+  // ---- Accounts: each one is a fully separate dataset. ----
+  const closeTransient = () => {
+    setOccModal(null);
+    setDupPrompt(null);
+    setSplitEntry(null);
+    setDeleteTarget(null);
+    setAddFundsOpen(false);
+    setHighlightEntryId(null);
+  };
+
+  /** Make `id` the active account (keeps the current view + date). */
+  const activateAccount = useCallback(
+    (id: string, accountsList: AccountRecord[]) => {
+      const target = accountsList.find((a) => a.id === id);
+      if (!target) return;
+      live.current = { ...live.current, accounts: accountsList, activeId: id, state: target.data };
+      setAccounts(accountsList);
+      setActiveId(id);
+      setState(target.data);
+      undoRef.current.clear();
+      setCanUndo(false);
+      persist();
+    },
+    [persist],
+  );
+
+  const switchAccount = (id: string) => {
+    if (id === live.current.activeId) return;
+    closeTransient();
+    setWizardOpen(false);
+    activateAccount(id, mergeActive(live.current));
+    const name = live.current.accounts.find((a) => a.id === id)?.name;
+    if (name) showToast(`Switched to ${name}.`);
+  };
+
+  const createAccount = () => {
+    closeTransient();
+    const merged = mergeActive(live.current);
+    const acct = makeAccount(nextAccountName(merged), createSeedState(), { ui: { ...live.current.ui } });
+    activateAccount(acct.id, [...merged, acct]);
+    setWizardOpen(true);
+  };
+
+  const renameAccount = (id: string, name: string) => {
+    const n = name.trim();
+    if (!n) return;
+    live.current = {
+      ...live.current,
+      accounts: mergeActive(live.current).map((a) => (a.id === id ? { ...a, name: n } : a)),
+    };
+    persist();
+  };
+
+  const resetAccount = (id: string) => {
+    const merged = mergeActive(live.current);
+    const target = merged.find((a) => a.id === id);
+    if (!target) return;
+    const at = new Date();
+    const ok = writeBackupCopy(`${RESET_BACKUP_PREFIX}${id}-${at.getTime()}`, {
+      app: 'OKV Spend Smart',
+      kind: 'reset-backup',
+      at: at.toISOString(),
+      account: target,
+    });
+    if (!ok && !confirm('Could not save a backup copy (browser storage may be full). Reset anyway?')) return;
+    closeTransient();
+    const { setupDone: _sd, ...rest } = target;
+    void _sd;
+    const fresh: AccountRecord = { ...rest, data: createSeedState() };
+    const list = merged.map((a) => (a.id === id ? fresh : a));
+    if (id === live.current.activeId) {
+      live.current = { ...live.current, accounts: list, state: fresh.data };
+      setState(fresh.data);
+      undoRef.current.clear();
+      setCanUndo(false);
+      persist();
+    } else {
+      activateAccount(id, list);
+    }
+    setAcctDialog(null);
+    setWizardOpen(true);
+    showToast(`${target.name} was reset. A backup copy was kept.`);
+  };
+
+  const deleteAccount = (id: string) => {
+    const merged = mergeActive(live.current);
+    const target = merged.find((a) => a.id === id);
+    if (!target || merged.length <= 1) return;
+    const at = new Date();
+    const ok = writeBackupCopy(`${DELETED_BACKUP_PREFIX}${id}-${at.getTime()}`, {
+      app: 'OKV Spend Smart',
+      kind: 'deleted-backup',
+      at: at.toISOString(),
+      account: target,
+    });
+    if (!ok && !confirm('Could not save a backup copy (browser storage may be full). Delete anyway?')) return;
+    const rest = merged.filter((a) => a.id !== id);
+    setAcctDialog(null);
+    if (id === live.current.activeId) {
+      closeTransient();
+      setWizardOpen(false);
+      activateAccount(rest[0].id, rest);
+    } else {
+      live.current = { ...live.current, accounts: rest };
+      persist();
+    }
+    showToast(`Deleted ${target.name}.`);
+  };
+
+  /** Wizard finished / skipped / closed: never auto-open again for this account. */
+  const markSetupDone = () => {
+    setWizardOpen(false);
+    live.current = {
+      ...live.current,
+      accounts: mergeActive(live.current).map((a) =>
+        a.id === live.current.activeId ? { ...a, setupDone: true } : a,
+      ),
+    };
+    update({ ...live.current.state, hasSeenWelcome: true });
+  };
 
   const pushUndo = useCallback(() => {
     undoRef.current.push(state);
@@ -424,6 +602,16 @@ export default function App() {
     [state.bills, selectedDate, today],
   );
   const overdueNow = useMemo(() => overdueList(state.bills, today), [state.bills, today]);
+  const activeAccount = accounts.find((a) => a.id === activeId);
+  const accountsForView = useMemo(
+    () => accounts.map((a) => (a.id === activeId ? { ...a, data: state } : a)),
+    [accounts, activeId, state],
+  );
+  // First launch of an empty account (no entries, no bills, never set up) → open the setup wizard.
+  const autoSetup = !!activeAccount && needsSetup({ setupDone: activeAccount.setupDone, data: state });
+  useEffect(() => {
+    if (autoSetup) setWizardOpen(true);
+  }, [autoSetup, activeId]);
   const viewRangeEnd =
     view === 'week'
       ? weekRangeMonSun(selectedDate).end
@@ -433,13 +621,19 @@ export default function App() {
           ? yearBounds(selectedDate).end
           : selectedDate;
 
-  const doExport = (kind: 'json' | 'csv') => {
+  const doExport = (kind: 'json' | 'csv' | 'all') => {
     const stamped = markExport(state);
     update(stamped);
-    if (kind === 'json') {
+    if (kind === 'all') {
+      downloadBlob(
+        'OKV-Spend-Smart-backup-all-accounts.json',
+        exportAllJSON(mergeActive(live.current), live.current.activeId, theme),
+        'application/json',
+      );
+    } else if (kind === 'json') {
       downloadBlob(
         'OKV-Spend-Smart-backup.json',
-        exportJSON(stamped, theme),
+        exportJSON(stamped, theme, activeAccount?.name),
         'application/json',
       );
     } else {
@@ -452,12 +646,46 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = () => {
       const raw = String(reader.result ?? '');
+      const multi = parseImportAccounts(raw);
+      if (multi) {
+        // All-accounts file: add its accounts next to the current ones (nothing is overwritten).
+        if (
+          !confirm(
+            `This file contains ${multi.accounts.length} account${multi.accounts.length === 1 ? '' : 's'}. Add ${multi.accounts.length === 1 ? 'it' : 'them'} as new account${multi.accounts.length === 1 ? '' : 's'}? Your current accounts stay unchanged.`,
+          )
+        )
+          return;
+        const merged = mergeActive(live.current);
+        const ids = new Set(merged.map((a) => a.id));
+        const names = new Set(merged.map((a) => a.name));
+        const added = multi.accounts.map((a) => {
+          const id = ids.has(a.id) ? newAccountId() : a.id;
+          ids.add(id);
+          let name = a.name;
+          while (names.has(name)) name = `${name} (imported)`;
+          names.add(name);
+          return { ...a, id, name, setupDone: true };
+        });
+        live.current = { ...live.current, accounts: [...merged, ...added] };
+        persist();
+        setImportOpen(false);
+        showToast(`Added ${added.length} account${added.length === 1 ? '' : 's'}: ${added.map((a) => a.name).join(', ')}.`);
+        return;
+      }
       const parsed = parseImport(raw);
       if (!parsed) {
         alert('Invalid backup file.');
         return;
       }
       pushUndo();
+      // Importing a backup counts as setting up this account (no wizard afterwards).
+      live.current = {
+        ...live.current,
+        accounts: mergeActive(live.current).map((a) =>
+          a.id === live.current.activeId ? { ...a, setupDone: true } : a,
+        ),
+      };
+      setWizardOpen(false);
       if (mode === 'replace') {
         update(parsed);
         const importedTheme = parseImportTheme(raw);
@@ -491,9 +719,12 @@ export default function App() {
         onRules={() => setRulesOpen(true)}
         onToggleDark={() => setTheme(toggleMode(theme))}
         onTheme={() => setThemeOpen(true)}
+        accounts={accounts}
+        activeAccountId={activeId}
+        onSwitchAccount={switchAccount}
       />
 
-      {view !== 'bills' && view !== 'statistics' && (
+      {view !== 'bills' && view !== 'statistics' && view !== 'accounts' && (
         <SummaryCards
           state={state}
           selectedDate={selectedDate}
@@ -585,11 +816,29 @@ export default function App() {
       {view === 'statistics' && (
         <StatisticsView state={state} selectedDate={selectedDate} />
       )}
+      {view === 'accounts' && (
+        <AccountsView
+          accounts={accountsForView}
+          activeId={activeId}
+          onSwitch={switchAccount}
+          onCreate={createAccount}
+          onRename={(id) => setAcctDialog({ kind: 'rename', id })}
+          onReset={(id) => setAcctDialog({ kind: 'reset', id })}
+          onDelete={(id) => {
+            if (accounts.length <= 1) {
+              showToast('You can’t delete the only account — use Reset instead.');
+              return;
+            }
+            setAcctDialog({ kind: 'delete', id });
+          }}
+          onRunWizard={() => setWizardOpen(true)}
+        />
+      )}
 
       {addFundsOpen && (
         <AddFunds
-          defaultAmount={state.expectedIncome.amount}
-          expectedFrequency={state.expectedIncome.frequency}
+          defaultAmount={state.paySchedule?.amount || state.expectedIncome.amount}
+          expectedFrequency={state.paySchedule?.amount ? undefined : state.expectedIncome.frequency}
           defaultDate={addFundsDate}
           onConfirm={confirmAddFunds}
           onClose={() => setAddFundsOpen(false)}
@@ -662,11 +911,24 @@ export default function App() {
               Export CSV
             </button>
           </div>
+          <p className="muted small">
+            JSON and CSV contain the active account{activeAccount ? ` (${activeAccount.name})` : ''}.
+            {accounts.length > 1 ? ' Use “All accounts” for one file with every account.' : ''}
+          </p>
+          <div className="modal-actions">
+            <button type="button" className="btn ghost" onClick={() => doExport('all')} data-testid="export-all">
+              Export all accounts (JSON)
+            </button>
+          </div>
         </Modal>
       )}
       {importOpen && (
         <Modal title="Import backup" onClose={() => setImportOpen(false)}>
           <p>Choose a previously exported OKV Spend Smart JSON backup.</p>
+          <p className="muted small">
+            A single-account backup goes into the active account
+            {activeAccount ? ` (${activeAccount.name})` : ''}. An all-accounts file is added as new accounts.
+          </p>
           <input
             ref={importRef}
             type="file"
@@ -686,7 +948,12 @@ export default function App() {
               type="button"
               className="btn danger"
               onClick={() => {
-                if (!confirm('Replace all current data with the imported file?')) return;
+                if (
+                  !confirm(
+                    `Replace all data in “${activeAccount?.name ?? 'this account'}” with the imported file? Other accounts are not touched.`,
+                  )
+                )
+                  return;
                 if (importRef.current) {
                   importRef.current.dataset.mode = 'replace';
                   importRef.current.click();
@@ -699,6 +966,7 @@ export default function App() {
               type="button"
               className="btn primary"
               onClick={() => {
+                if (!confirm(`Merge the imported file into “${activeAccount?.name ?? 'this account'}”?`)) return;
                 if (importRef.current) {
                   importRef.current.dataset.mode = 'merge';
                   importRef.current.click();
@@ -767,7 +1035,59 @@ export default function App() {
           onClose={() => setThemeOpen(false)}
         />
       )}
-      {!state.hasSeenWelcome && (
+      {wizardOpen && activeAccount && (
+        <SetupWizard
+          key={activeId}
+          accountName={activeAccount.name}
+          state={state}
+          onRename={(n) => renameAccount(activeId, n)}
+          onCommit={(next) => {
+            pushUndo();
+            update(next);
+          }}
+          onDone={markSetupDone}
+          onRestore={() => {
+            markSetupDone();
+            setImportOpen(true);
+          }}
+        />
+      )}
+      {acctDialog &&
+        (() => {
+          const a = accountsForView.find((x) => x.id === acctDialog.id);
+          if (!a) return null;
+          if (acctDialog.kind === 'rename')
+            return (
+              <RenameAccount
+                current={a.name}
+                onCancel={() => setAcctDialog(null)}
+                onSave={(n) => {
+                  renameAccount(a.id, n);
+                  setAcctDialog(null);
+                }}
+              />
+            );
+          if (acctDialog.kind === 'reset')
+            return (
+              <ResetAccountConfirm
+                accountName={a.name}
+                entryCount={a.data.entries.length}
+                billCount={a.data.bills.length}
+                onCancel={() => setAcctDialog(null)}
+                onReset={() => resetAccount(a.id)}
+              />
+            );
+          return (
+            <DeleteAccountFlow
+              accountName={a.name}
+              entryCount={a.data.entries.length}
+              billCount={a.data.bills.length}
+              onCancel={() => setAcctDialog(null)}
+              onDelete={() => deleteAccount(a.id)}
+            />
+          );
+        })()}
+      {!state.hasSeenWelcome && !wizardOpen && !autoSetup && (
         <FirstOpen
           onClose={() => update({ ...state, hasSeenWelcome: true })}
         />

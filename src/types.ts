@@ -1,4 +1,4 @@
-export type ViewName = 'day' | 'week' | 'month' | 'year' | 'bills' | 'statistics';
+export type ViewName = 'day' | 'week' | 'month' | 'year' | 'bills' | 'statistics' | 'accounts';
 
 export type EntryType = 'income' | 'expense' | 'refund';
 export type EntrySource = 'grid' | 'quick-add' | 'add-funds' | 'bills-overview' | 'split' | 'bill-paid';
@@ -58,6 +58,8 @@ export type PayFrequency = 'daily' | 'weekly' | 'biweekly' | 'monthly';
 export interface PaySchedule {
   frequency: PayFrequency;
   anchor: string; // YYYY-MM-DD local
+  /** Expected amount per paycheck (planning only, set by the setup wizard). Never income. */
+  amount?: number;
 }
 
 export type MatchType = 'contains' | 'starts with' | 'exact';

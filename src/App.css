@@ -1064,3 +1064,134 @@ body {
 .payday-boxes legend { font-size: 0.8rem; font-weight: 600; padding: 0 4px; }
 .payday-boxes .radio { display: inline-block; margin-right: 12px; }
 .bill-link { white-space: nowrap; }
+
+/* ---- Accounts + setup wizard (multi-account pass) ---- */
+.account-switch select {
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+  font-size: 0.85rem;
+  max-width: 180px;
+}
+.brand { flex-wrap: wrap; }
+.accounts-view { margin-top: 4px; }
+.accounts-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.accounts-head h2 { margin: 0 0 4px; font-size: 1.2rem; }
+.accounts-head p { margin: 0; max-width: 60ch; }
+.accounts-head-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.account-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.account-card { border: 1px solid var(--border); }
+.account-card.active { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary), var(--shadow); }
+.account-name { margin: 0 0 8px; font-size: 1.05rem; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.active-badge {
+  background: var(--primary);
+  color: var(--on-accent);
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+.account-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+  margin: 0 0 10px;
+}
+.account-facts dt { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.account-facts dd { margin: 0; font-weight: 600; }
+.account-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn.danger-text { color: var(--red-text); border-color: var(--red-border); }
+.spacer { flex: 1; }
+
+.wizard-steps {
+  list-style: none;
+  display: flex;
+  gap: 6px;
+  padding: 0;
+  margin: 0 0 14px;
+  flex-wrap: wrap;
+}
+.wizard-steps li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  padding: 4px 10px 4px 4px;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+.wizard-steps .num {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--text);
+  font-weight: 700;
+  font-size: 0.72rem;
+}
+.wizard-steps li.active { color: var(--text); font-weight: 700; }
+.wizard-steps li.active .num { background: var(--primary); color: var(--on-accent); }
+.wizard-steps li.done .num { background: var(--green-bg); color: var(--green-text); }
+.wizard-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.wizard-bill-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.8fr 1fr 0.9fr 1.1fr auto;
+  gap: 6px;
+  align-items: end;
+  padding: 8px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.wizard-bill-row .field { margin-bottom: 0; min-width: 0; }
+.wizard-bill-row .field input,
+.wizard-bill-row .field select { min-width: 0; width: 100%; box-sizing: border-box; }
+.wizard-grid .field input,
+.wizard-grid .field select { min-width: 0; width: 100%; box-sizing: border-box; }
+.wizard-remove { align-self: end; margin-bottom: 2px; }
+.wizard-row-error { grid-column: 1 / -1; margin: 0; }
+.wizard-added { list-style: none; padding: 0; margin: 0 0 10px; }
+.wizard-added li { color: var(--green-text); background: var(--green-bg); border-radius: 8px; padding: 4px 8px; margin-bottom: 4px; font-size: 0.85rem; }
+.wizard-summary { padding-left: 1.1rem; line-height: 1.7; margin: 0 0 8px; }
+.wizard-actions { align-items: center; flex-wrap: wrap; }
+@media (max-width: 720px) {
+  .wizard-grid { grid-template-columns: 1fr; }
+  .wizard-bill-row { grid-template-columns: 1fr 1fr; }
+  .wizard-bill-row .field:first-child { grid-column: 1 / -1; }
+  .wizard-remove { grid-column: 1 / -1; justify-self: end; }
+  .wizard-steps .lbl { display: none; }
+  .wizard-steps li.active .lbl { display: inline; }
+  .modal-backdrop { padding: 8px; }
+  .modal.wide { max-height: 94vh; }
+  .account-list { grid-template-columns: 1fr; }
+}
+/* iOS zooms inputs under 16px on focus */
+@media (max-width: 520px) {
+  .modal input, .modal select, .account-switch select { font-size: 16px; }
+}
+.modal.wide[data-testid='setup-wizard'] { width: min(860px, 100%); }
+.card h3.account-name { color: var(--text); font-size: 1.05rem; text-transform: none; letter-spacing: normal; font-weight: 700; }

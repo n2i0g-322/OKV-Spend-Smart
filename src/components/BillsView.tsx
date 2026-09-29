@@ -218,7 +218,7 @@ export function BillsView({
 
   const setPayday = (date: string, freq: PayFrequency, on: boolean) => {
     pushUndo();
-    onState({ ...state, paySchedule: on ? { frequency: freq, anchor: date } : null });
+    onState({ ...state, paySchedule: on ? { ...(state.paySchedule ?? {}), frequency: freq, anchor: date } : null });
     onToast?.(on ? `Payday markers: ${PAY_FREQ_LABEL[freq]} from ${formatShortDate(date)} (markers only, not income).` : 'Payday schedule cleared.');
   };
 

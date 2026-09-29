@@ -181,7 +181,7 @@ export function SummaryCards({
                 const f = e.target.value as PayFrequency | '';
                 if (!onPayScheduleChange) return;
                 if (!f) onPayScheduleChange(null);
-                else onPayScheduleChange({ frequency: f, anchor: state.paySchedule?.anchor ?? today });
+                else onPayScheduleChange({ ...(state.paySchedule ?? {}), frequency: f, anchor: state.paySchedule?.anchor ?? today });
               }}
             >
               <option value="">None (income dates only)</option>
@@ -206,6 +206,11 @@ export function SummaryCards({
             </label>
           )}
           {nextPay && <span className="muted tiny">Next payday marker: {formatShortDate(nextPay)}</span>}
+          {state.paySchedule?.amount ? (
+            <span className="muted tiny" data-testid="paycheck-plan">
+              Paycheck (planning only): {formatMoney(state.paySchedule.amount)}
+            </span>
+          ) : null}
         </div>
         <p className="muted tiny">Planning only — expected pay and payday markers never enter net saved.</p>
         <button type="button" className="btn primary sm" onClick={onAddFunds}>

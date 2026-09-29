@@ -20,6 +20,7 @@ const VIEWS: { id: ViewName; label: string }[] = [
   { id: 'year', label: 'Year' },
   { id: 'bills', label: 'Bills' },
   { id: 'statistics', label: 'Statistics' },
+  { id: 'accounts', label: 'Accounts' },
 ];
 
 interface Props {
@@ -40,6 +41,9 @@ interface Props {
   onRules: () => void;
   onToggleDark: () => void;
   onTheme: () => void;
+  accounts: { id: string; name: string }[];
+  activeAccountId: string;
+  onSwitchAccount: (id: string) => void;
 }
 
 /** "Saved just now" / "Saved 5 min ago" … for the last successful localStorage write. */
@@ -75,6 +79,9 @@ export function Header({
   onRules,
   onToggleDark,
   onTheme,
+  accounts,
+  activeAccountId,
+  onSwitchAccount,
 }: Props) {
   const d = parseLocalDate(selectedDate);
   const week = weekRangeMonSun(selectedDate);
@@ -106,6 +113,26 @@ export function Header({
             📊
           </span>
           <h1>OKV Spend Smart</h1>
+          <label className="account-switch" title="Active account">
+            <span className="sr-only">Active account</span>
+            <select
+              value={activeAccountId}
+              aria-label="Active account"
+              data-testid="account-switcher"
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === '__manage') onView('accounts');
+                else if (v !== activeAccountId) onSwitchAccount(v);
+              }}
+            >
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+              <option value="__manage">Manage accounts…</option>
+            </select>
+          </label>
         </div>
         <nav className="view-switcher" aria-label="Views">
           {VIEWS.map((v) => (
@@ -164,6 +191,7 @@ export function Header({
           </span>
         </div>
       </div>
+      {view !== 'accounts' && (
       <div className="date-nav">
         <button type="button" className="btn ghost" onClick={goToday}>
           Today
@@ -233,6 +261,7 @@ export function Header({
           ›
         </button>
       </div>
+      )}
     </header>
   );
 }

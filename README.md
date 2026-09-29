@@ -27,10 +27,17 @@ GitHub Pages base path is `/OKV-Spend-Smart/`.
 
 ## localStorage
 
-- One blob under the key **`okvSpendSmart`**: `{ schema, savedAt, state, theme, ui }`.
-  `state` holds tabs, columns (+ soft budgets), entries, bills (+ paid/skipped statuses), rules,
-  charts, Box 3 expected income + frequency, `lastBackupAt` (= last successful save) and
-  `lastExportAt`; `theme` is the colour theme; `ui` is the last view + selected date.
+- One blob under the key **`okvSpendSmart`** (schema 4):
+  `{ schema: 4, version: 4, savedAt, activeAccountId, accounts: [{ id, name, createdAt, savedAt, setupDone, data, ui }], theme }`.
+  Each account's `data` is a full, separate dataset: tabs, columns (+ soft budgets), entries, bills
+  (+ occurrences and action log), rules, charts, Box 3 expected income + payday schedule, `lastBackupAt`
+  (= last successful save) and `lastExportAt`; `ui` is that account's last view + selected date.
+  `theme` (the colour theme) is shared by all accounts.
+- Older single-account blobs (schema ≤3) and the old `okvSpendSmart:state` key migrate into “Account 1”
+  unchanged. A verbatim copy is kept once under `okvSpendSmart:pre-schema4-backup` (and
+  `okvSpendSmart:pre-schema3-backup` for schema ≤2).
+- Reset keeps a copy under `okvSpendSmart:reset-backup-<accountId>-<timestamp>`, and Delete keeps one under
+  `okvSpendSmart:deleted-backup-<accountId>-<timestamp>`.
 - Written synchronously after every committed action, plus a 60-second flush if anything is dirty.
   The header shows “Saved just now / Saved N min ago”.
 - On boot storage is read first; default tabs are seeded only when storage is truly empty. Nothing is
@@ -41,7 +48,22 @@ GitHub Pages base path is `/OKV-Spend-Smart/`.
 
 **Warning:** Clearing site data / cookies for this origin wipes localStorage and deletes all OKV Spend Smart data. Export backups regularly (JSON + CSV).
 
-Export filenames: `OKV-Spend-Smart-backup.json` / `OKV-Spend-Smart-backup.csv`.
+Export filenames: `OKV-Spend-Smart-backup.json` / `OKV-Spend-Smart-backup.csv` (active account), and
+`OKV-Spend-Smart-backup-all-accounts.json` (every account). A single-account backup, including one from
+an older version, imports into the active account after a confirm. An all-accounts file is added as new accounts.
+
+## Accounts and setup wizard
+
+- The **Accounts** tab (after Statistics) lists every account. Each one has Switch, Rename, Reset and Delete,
+  plus Create account and Run setup wizard. The header has a quick account switcher.
+- **Create** makes an empty “Account N”, switches to it and opens the setup wizard.
+- **Reset** clears one account back to the defaults (the name is kept) after one confirm, then opens the wizard.
+- **Delete** asks 3 confirmations, then a random addition question, then you type `DELETE`. The last account
+  can't be deleted; use Reset instead.
+- The **setup wizard** has 4 steps: welcome + name, paycheck (amount + Daily / Weekly / Every 2 weeks / Monthly +
+  payday), bills, summary. It is planning only: it sets payday markers + Box 3 and creates bill reminders.
+  It never creates entries. It opens automatically only for an account with no entries, no bills and no
+  `setupDone` flag. Finishing, skipping or closing it sets `setupDone`.
 
 ## Data model
 

@@ -1,0 +1,20 @@
+OKV Spend Smart pass 3 (2026-09-29): multiple accounts + first-launch setup wizard.
+
+User request (verbatim):
+"create a little wizard tool on first launch of setting up some bills and paycheck. if the user already has entries, do nut pop up the setupwizard agian. we can have a tab next to the staticstcs which says account 1 and 2, this way if a user has made some mistakes and wants to reset it they can start a brand new one. for these new fields create a, delete, create reset. create will come with with the setup wizard and so will reset. Delete will come with 3 confirmations of deletion. aswell a prompt asking user simple math quesitons like 2+2=? (4) and a prompt that makes the user time delete."
+
+Build:
+1. Multiple accounts: "Accounts" tab after Statistics. Each account is a fully separate dataset; theme stays global.
+   Schema 4 under key okvSpendSmart { version: 4, activeAccountId, accounts: [{ id, name, createdAt, data }], theme }.
+   Lossless migration into "Account 1" with backup okvSpendSmart:pre-schema4-backup. Old schema-3 / older keys still migrate.
+   Export the active account (and optionally all). An old single-account backup imports into the active account after a confirm.
+   Cross-tab sync keeps working. The header shows the active account + a quick switcher.
+2. Accounts tab: list (name, created, entry count, bill count, last saved), switch, rename, Create / Reset / Delete.
+   Create: "Account N", switch, open wizard. Reset: one confirm, backup okvSpendSmart:reset-backup-<id>-<ts>, keep name, open wizard.
+   Delete: 3 confirmations, then a random addition question, then type DELETE (case-sensitive). Cancel at every step.
+   The last account can't be deleted. Backup okvSpendSmart:deleted-backup-<id>-<ts>.
+3. Setup wizard: Welcome + name, Paycheck (amount, Daily/Weekly/Every 2 weeks/Monthly, anchor date; planning only), Bills
+   (existing bill model, log "created", no entries), Summary + Finish. Skip on every step; closing marks setupDone.
+   Auto-show only when the active account has zero entries AND zero bills AND no setupDone.
+4. Save after every committed action. Mobile width + dark mode.
+Ledger math unchanged.
